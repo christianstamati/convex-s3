@@ -471,21 +471,68 @@ export async function listObjects(
   }
 }
 
+const GiB = 1024 * 1024 * 1024
+/** S3 copies up to 5 GB in one request; above that, part by part. */
+export const MAX_COPY_SIZE = 5 * GiB
+const COPY_PART_SIZE = GiB
+const COPY_CONCURRENCY = 4
+
+function copySource(
+  config: S3Config,
+  key: string,
+  versionId: string | undefined
+) {
+  return `/${config.bucket}/${uriEncode(key, false)}${
+    versionId ? `?versionId=${uriEncode(versionId)}` : ""
+  }`
+}
+
+/** The headers and metadata an object has, as options to store a copy. */
+function putOptionsOf(info: ObjectInfo): PutOptions {
+  return {
+    contentType: info.contentType,
+    cacheControl: info.cacheControl,
+    contentDisposition: info.contentDisposition,
+    metadata: Object.keys(info.metadata).length > 0 ? info.metadata : undefined,
+    storageClass: info.storageClass,
+  }
+}
+
+export type CopyOptions = {
+  /** Store the copy with these instead of the source's headers. */
+  put?: PutOptions | undefined
+  sourceVersionId?: string | undefined
+  /**
+   * What a HEAD of the source saw. Needed above `multipartThreshold`, where
+   * the copy goes part by part (`UploadPartCopy`) and S3 copies no headers.
+   */
+  source?: ObjectInfo | undefined
+  multipartThreshold?: number | undefined
+  partSize?: number | undefined
+}
+
 /**
  * Copies an object inside the bucket. With `put`, the copy gets those
- * headers and metadata instead of the source's. Up to 5 GB.
+ * headers and metadata instead of the source's. Above 5 GB (with `source`
+ * given), it copies part by part.
  */
 export async function copyObject(
   config: S3Config,
   sourceKey: string,
   destinationKey: string,
-  options: { put?: PutOptions; sourceVersionId?: string | undefined } = {}
+  options: CopyOptions = {}
 ) {
-  const source = `/${config.bucket}/${uriEncode(sourceKey, false)}${
-    options.sourceVersionId
-      ? `?versionId=${uriEncode(options.sourceVersionId)}`
-      : ""
-  }`
+  const threshold = Math.min(
+    options.multipartThreshold ?? MAX_COPY_SIZE,
+    MAX_COPY_SIZE
+  )
+  if (options.source !== undefined && options.source.size > threshold) {
+    return await copyInParts(config, sourceKey, destinationKey, {
+      ...options,
+      source: options.source,
+    })
+  }
+  const source = copySource(config, sourceKey, options.sourceVersionId)
   const headers: Record<string, string> = {
     ...(options.put ? putHeaders(options.put) : {}),
     "x-amz-copy-source": source,
@@ -507,6 +554,69 @@ export async function copyObject(
   return {
     etag: unquote(text(xml, "ETag")),
     versionId: response.headers.get("x-amz-version-id") ?? undefined,
+  }
+}
+
+/** A multipart upload whose parts are server-side copies of byte ranges. */
+async function copyInParts(
+  config: S3Config,
+  sourceKey: string,
+  destinationKey: string,
+  options: CopyOptions & { source: ObjectInfo }
+) {
+  const size = options.source.size
+  const partSize = Math.min(
+    Math.max(options.partSize ?? COPY_PART_SIZE, Math.ceil(size / 10_000)),
+    MAX_COPY_SIZE
+  )
+  const partCount = Math.ceil(size / partSize)
+  const put = options.put ?? putOptionsOf(options.source)
+  const uploadId = await createMultipartUpload(config, destinationKey, put)
+  try {
+    const parts: Part[] = []
+    const queue = Array.from({ length: partCount }, (_, i) => i + 1)
+    const worker = async () => {
+      for (let n = queue.shift(); n !== undefined; n = queue.shift()) {
+        const start = (n - 1) * partSize
+        const end = Math.min(start + partSize, size) - 1
+        const response = await send(
+          config,
+          "PUT",
+          objectUrl(config, destinationKey, {
+            partNumber: String(n),
+            uploadId,
+          }),
+          {
+            headers: {
+              "x-amz-copy-source": copySource(
+                config,
+                sourceKey,
+                options.sourceVersionId
+              ),
+              "x-amz-copy-source-range": `bytes=${start}-${end}`,
+            },
+          }
+        )
+        const xml = await response.text()
+        const error = errorInBody(response.status, xml)
+        if (error) throw error
+        parts.push({ partNumber: n, etag: text(xml, "ETag") ?? "" })
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(COPY_CONCURRENCY, partCount) }, worker)
+    )
+    return await completeMultipartUpload(
+      config,
+      destinationKey,
+      uploadId,
+      parts
+    )
+  } catch (error) {
+    await abortMultipartUpload(config, destinationKey, uploadId).catch(
+      () => undefined
+    )
+    throw error
   }
 }
 

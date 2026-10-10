@@ -1,3 +1,4 @@
+import rateLimiter from "@convex-dev/rate-limiter/convex.config.js"
 import { defineApp } from "convex/server"
 import { v } from "convex/values"
 import s3 from "convex-s3/convex.config"
@@ -31,5 +32,8 @@ app.use(s3, {
     S3_PUBLIC_URL: app.env.S3_PUBLIC_URL,
   },
 })
+
+// Caps on the public examples (convex/lib/rateLimits.ts).
+app.use(rateLimiter)
 
 export default app

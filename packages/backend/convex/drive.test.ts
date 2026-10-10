@@ -150,6 +150,38 @@ describe("drive", () => {
     ).rejects.toThrow("can't be deleted")
   })
 
+  test("signs a fresh URL to open or download a file", async () => {
+    const { t } = setup()
+    const key = await upload(t, "", "a b.txt", "hello")
+    const open = await t.mutation(api.drive.fileUrl, { key, download: false })
+    expect(await (await fetch(open)).text()).toBe("hello")
+    const download = await t.mutation(api.drive.fileUrl, {
+      key,
+      download: true,
+    })
+    expect(download).toContain("response-content-disposition=attachment")
+    await expect(
+      t.mutation(api.drive.fileUrl, {
+        key: "drive/missing.txt",
+        download: false,
+      })
+    ).rejects.toThrow("gone")
+  })
+
+  test("caps Drive writes", async () => {
+    const { t } = setup()
+    const attempts = Array.from({ length: 61 }, (_, i) =>
+      t.mutation(api.drive.removeFile, { key: `drive/none-${i}.txt` })
+    )
+    const results = await Promise.allSettled(attempts)
+    const refused = results.filter(
+      (r) =>
+        r.status === "rejected" &&
+        String(r.reason).includes("Too many requests")
+    )
+    expect(refused.length).toBeGreaterThan(0)
+  })
+
   test("refuses paths outside the Drive", async () => {
     const { t } = setup()
     await expect(

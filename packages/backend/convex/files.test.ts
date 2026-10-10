@@ -33,7 +33,13 @@ describe("files", () => {
     expect(files).toMatchObject([
       { name: "Q3-report.pdf", size: 3, contentType: "application/pdf" },
     ])
-    expect(files[0]?.url).toContain("response-content-disposition=attachment")
+    const id = files[0]?._id
+    if (!id) throw new Error("no file")
+    const url = await t.mutation(api.files.downloadUrl, { id })
+    expect(url).toContain("response-content-disposition=attachment")
+    expect(await (await fetch(url)).arrayBuffer()).toEqual(
+      new Uint8Array([1, 2, 3]).buffer
+    )
     expect(s3.objects.has(ticket.key)).toBe(true)
   })
 

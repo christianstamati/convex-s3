@@ -254,13 +254,14 @@ export class S3 {
     })
   }
 
-  /** Uploads bytes from an action and records them. Returns the key. */
+  /**
+   * Uploads bytes from an action and records them. Returns the key. Above
+   * `multipartThreshold` (64 MB) the bytes go up in parts, four at a time.
+   */
   async store(
     ctx: RunActionCtx,
     data: Blob | ArrayBuffer | Uint8Array,
-    options: Omit<UploadOptions, "size" | "multipartThreshold" | "partSize"> & {
-      type?: string
-    } = {}
+    options: Omit<UploadOptions, "size"> & { type?: string } = {}
   ): Promise<string> {
     const { type, ...rest } = options
     const body =
@@ -275,25 +276,63 @@ export class S3 {
       ...rest,
       contentType: contentType || undefined,
       size: body.byteLength,
-      multipartThreshold: Number.MAX_SAFE_INTEGER,
     })
-    if (ticket.method !== "single") throw new Error("Expected a single upload")
-    const response = await fetch(ticket.url, {
-      method: "PUT",
-      headers: ticket.headers,
-      body: body as BodyInit,
-    })
-    if (!response.ok) {
-      await this.abortUpload(ctx, ticket.key, ticket.token)
-      throw new Error(
-        `S3 refused the upload (${response.status}): ${(await response.text()).slice(0, 300)}`
+    const keyToken = { key: ticket.key, token: ticket.token }
+    try {
+      if (ticket.method === "multipart") {
+        await this.storeParts(ctx, body, keyToken)
+        return ticket.key
+      }
+      if (ticket.method !== "single") throw new Error("Unexpected ticket")
+      await sendBytes(ticket.url, ticket.headers, body)
+      await ctx.runAction(this.component.uploads.syncMetadata, keyToken)
+      return ticket.key
+    } catch (error) {
+      await this.abortUpload(ctx, ticket.key, ticket.token).catch(
+        () => undefined
       )
+      throw error
     }
-    await ctx.runAction(this.component.uploads.syncMetadata, {
-      key: ticket.key,
-      token: ticket.token,
+  }
+
+  private async storeParts(
+    ctx: RunActionCtx,
+    body: Uint8Array,
+    keyToken: { key: string; token: string }
+  ) {
+    const uploads = this.component.uploads
+    const { partSize, partCount } = await ctx.runAction(
+      uploads.createMultipartUpload,
+      keyToken
+    )
+    const parts: { partNumber: number; etag: string }[] = []
+    for (let first = 1; first <= partCount; first += STORE_SIGN_BATCH) {
+      const numbers = Array.from(
+        { length: Math.min(STORE_SIGN_BATCH, partCount - first + 1) },
+        (_, i) => first + i
+      )
+      const signed = await ctx.runMutation(uploads.signUploadParts, {
+        ...keyToken,
+        partNumbers: numbers,
+      })
+      const queue = [...signed]
+      const worker = async () => {
+        for (let part = queue.shift(); part; part = queue.shift()) {
+          const start = (part.partNumber - 1) * partSize
+          const etag = await sendBytes(
+            part.url,
+            {},
+            body.subarray(start, start + partSize)
+          )
+          parts.push({ partNumber: part.partNumber, etag: etag ?? "" })
+        }
+      }
+      await Promise.all(Array.from({ length: STORE_CONCURRENCY }, worker))
+    }
+    await ctx.runAction(uploads.completeMultipartUpload, {
+      ...keyToken,
+      parts,
     })
-    return ticket.key
   }
 
   /** HEADs the key and records what's there. */
@@ -673,6 +712,31 @@ function required<F>(check: F | undefined, name: string): F {
       `convex-s3: this function is off until clientApi() gets ${name}`
     )
   }) as F
+}
+
+/** Part URLs signed per call, and parts sent at once, by `store()`. */
+const STORE_SIGN_BATCH = 50
+const STORE_CONCURRENCY = 4
+
+/** PUTs bytes to a presigned URL. Returns the ETag. */
+async function sendBytes(
+  url: string,
+  headers: Record<string, string>,
+  body: Uint8Array
+) {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers,
+    body: body as BodyInit,
+  })
+  if (!response.ok) {
+    // Only the error code: S3's message can echo the request it refused.
+    const code = /<Code>([^<]+)<\/Code>/.exec(await response.text())?.[1]
+    throw new Error(
+      `S3 refused the upload (${response.status}${code ? ` ${code}` : ""})`
+    )
+  }
+  return response.headers.get("etag")
 }
 
 /** Drops undefined fields, and returns undefined for an empty object. */

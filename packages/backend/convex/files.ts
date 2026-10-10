@@ -4,6 +4,8 @@
 import { ConvexError, v } from "convex/values"
 import type { DataModel } from "./_generated/dataModel"
 import { mutation, query } from "./_generated/server"
+import { attachment } from "./lib/attachment"
+import { limit } from "./lib/rateLimits"
 import { s3 } from "./lib/s3"
 
 const MiB = 1024 * 1024
@@ -20,7 +22,8 @@ export const {
   abortUpload,
   onSyncMetadata,
 } = s3.clientApi<DataModel>({
-  checkUpload: (_ctx, _bucket, request) => {
+  checkUpload: async (ctx, _bucket, request) => {
+    await limit(ctx, "uploads")
     if (request.size !== undefined && request.size > MAX_FILE_SIZE) {
       throw new ConvexError("Files can be 2 GB at most")
     }
@@ -52,24 +55,32 @@ const vFile = v.object({
   name: v.string(),
   size: v.number(),
   contentType: v.optional(v.string()),
-  url: v.string(),
 })
 
-/** The newest files, each with a download URL. */
+/**
+ * The newest files. No URLs: a subscribed query keeps its first result
+ * until the data changes, so URLs signed in it would expire on screen.
+ * `downloadUrl` signs one when it's clicked.
+ */
 export const list = query({
   args: {},
   returns: v.array(vFile),
   handler: async (ctx) => {
-    const files = await ctx.db.query("files").order("desc").take(50)
-    return await Promise.all(
-      files.map(async (file) => ({
-        ...file,
-        url: await s3.getUrl(ctx, file.key, {
-          expiresIn: 60 * 60,
-          responseContentDisposition: `attachment; filename="${file.name}"`,
-        }),
-      }))
-    )
+    return await ctx.db.query("files").order("desc").take(50)
+  },
+})
+
+/** A fresh download URL for one file, valid for 5 minutes. */
+export const downloadUrl = mutation({
+  args: { id: v.id("files") },
+  returns: v.string(),
+  handler: async (ctx, { id }) => {
+    const file = await ctx.db.get("files", id)
+    if (file === null) throw new ConvexError("File not found")
+    return await s3.getUrl(ctx, file.key, {
+      expiresIn: 5 * 60,
+      responseContentDisposition: attachment(file.name),
+    })
   },
 })
 

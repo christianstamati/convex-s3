@@ -14,8 +14,8 @@ import {
   type QueryCtx,
   query,
 } from "./_generated/server"
+import { attachment } from "./lib/attachment"
 import {
-  attachment,
   cleanName,
   DRIVE_ROOT,
   folderPrefix,
@@ -27,6 +27,7 @@ import {
   parentOf,
   pathOf,
 } from "./lib/drivePaths"
+import { limit } from "./lib/rateLimits"
 import { s3 } from "./lib/s3"
 
 const MiB = 1024 * 1024
@@ -35,7 +36,7 @@ const MAX_FILE_SIZE = 2048 * MiB
 const MAX_MOVE = 500
 /** Objects moved at once. */
 const MOVE_CONCURRENCY = 8
-const URL_LIFETIME = 60 * 60
+const URL_LIFETIME = 5 * 60
 
 /** Any context that can read: queries, mutations (checkUpload) and actions. */
 type ReadCtx = QueryCtx | MutationCtx | ActionCtx
@@ -93,6 +94,7 @@ export const {
   // The browser sends the open folder as `prefix`; the file keeps its name,
   // numbered when the folder already has one like it.
   checkUpload: async (ctx, _bucket, request) => {
+    await limit(ctx, "uploads")
     if (request.size !== undefined && request.size > MAX_FILE_SIZE) {
       throw new ConvexError("Files can be 2 GB at most")
     }
@@ -116,13 +118,13 @@ const vFile = v.object({
   size: v.number(),
   contentType: v.optional(v.string()),
   lastModified: v.number(),
-  /** Opens the file in the browser. */
-  url: v.string(),
-  /** Downloads it under its name. */
-  downloadUrl: v.string(),
 })
 
-/** One folder: its subfolders and files, live. */
+/**
+ * One folder: its subfolders and files, live. No URLs: a subscribed query
+ * keeps its first result until the data changes, so URLs signed in it would
+ * expire on screen. `fileUrl` signs one when a file is opened.
+ */
 export const list = query({
   args: { path: v.string() },
   returns: v.object({
@@ -142,25 +144,33 @@ export const list = query({
         name: nameOf(folder),
         path: pathOf(folder),
       })),
-      files: await Promise.all(
-        listing.objects.map(async (object) => {
-          const name = nameOf(object.key)
-          return {
-            key: object.key,
-            name,
-            size: object.size,
-            contentType: object.contentType,
-            lastModified: object.lastModified,
-            url: object.url,
-            downloadUrl: await s3.getUrl(ctx, object.key, {
-              expiresIn: URL_LIFETIME,
-              responseContentDisposition: attachment(name),
-            }),
-          }
-        })
-      ),
+      files: listing.objects.map((object) => ({
+        key: object.key,
+        name: nameOf(object.key),
+        size: object.size,
+        contentType: object.contentType,
+        lastModified: object.lastModified,
+      })),
       isTruncated: listing.isTruncated,
     }
+  },
+})
+
+/** A fresh URL to open or download a file, valid for 5 minutes. */
+export const fileUrl = mutation({
+  args: { key: v.string(), download: v.boolean() },
+  returns: v.string(),
+  handler: async (ctx, { key, download }) => {
+    requireFileKey(key)
+    if ((await s3.getMetadata(ctx, key)) === null) {
+      throw new ConvexError("That file is gone")
+    }
+    return await s3.getUrl(ctx, key, {
+      expiresIn: URL_LIFETIME,
+      responseContentDisposition: download
+        ? attachment(nameOf(key))
+        : undefined,
+    })
   },
 })
 
@@ -169,6 +179,7 @@ export const createFolder = action({
   args: { path: v.string(), name: v.string() },
   returns: v.string(),
   handler: async (ctx, { path, name }): Promise<string> => {
+    await limit(ctx, "driveWrites")
     const parent = folderPrefix(requirePath(path))
     const key = await freeKey(ctx, parent, requireName(name), true)
     await s3.store(ctx, new Uint8Array(0), {
@@ -225,6 +236,7 @@ export const renameFile = action({
   args: { key: v.string(), name: v.string() },
   returns: v.null(),
   handler: async (ctx, { key, name }) => {
+    await limit(ctx, "driveWrites")
     requireFileKey(key)
     await moveFile(ctx, key, parentOf(key) + requireName(name))
     return null
@@ -235,6 +247,7 @@ export const moveFileTo = action({
   args: { key: v.string(), path: v.string() },
   returns: v.null(),
   handler: async (ctx, { key, path }) => {
+    await limit(ctx, "driveWrites")
     requireFileKey(key)
     await moveFile(ctx, key, folderPrefix(requirePath(path)) + nameOf(key))
     return null
@@ -246,6 +259,7 @@ export const renameFolder = action({
   args: { path: v.string(), name: v.string() },
   returns: v.string(),
   handler: async (ctx, { path, name }) => {
+    await limit(ctx, "driveWrites")
     const from = folderPrefix(requirePath(path))
     if (from === DRIVE_ROOT) throw new ConvexError("The Drive can't be renamed")
     const to = `${parentOf(from)}${requireName(name)}/`
@@ -259,6 +273,7 @@ export const moveFolderTo = action({
   args: { path: v.string(), to: v.string() },
   returns: v.string(),
   handler: async (ctx, args) => {
+    await limit(ctx, "driveWrites")
     const from = folderPrefix(requirePath(args.path))
     if (from === DRIVE_ROOT) throw new ConvexError("The Drive can't be moved")
     const to = `${folderPrefix(requirePath(args.to))}${nameOf(from)}/`
@@ -271,6 +286,7 @@ export const removeFile = mutation({
   args: { key: v.string() },
   returns: v.null(),
   handler: async (ctx, { key }) => {
+    await limit(ctx, "driveWrites")
     requireFileKey(key)
     await s3.deleteObject(ctx, key)
     return null
@@ -282,6 +298,7 @@ export const removeFolder = mutation({
   args: { path: v.string() },
   returns: v.null(),
   handler: async (ctx, { path }) => {
+    await limit(ctx, "driveWrites")
     const prefix = folderPrefix(requirePath(path))
     if (prefix === DRIVE_ROOT)
       throw new ConvexError("The Drive can't be deleted")

@@ -7,17 +7,18 @@ import { Button } from "@workspace/ui/components/button"
 import { toast } from "@workspace/ui/components/sonner"
 import { toastError } from "@/lib/errors"
 import { formatBytes } from "@/lib/format"
+import { download } from "@/lib/openUrl"
 
 type File = {
   _id: Id<"files">
   name: string
   size: number
   contentType?: string
-  url: string
 }
 
 /** One stored file: its name, size and type, a download and a delete. */
 export function FileItem({ file }: { file: File }) {
+  const downloadUrl = useConvexMutation(api.files.downloadUrl)
   const remove = useMutation({
     mutationFn: useConvexMutation(api.files.remove),
     // On the hook: the row unmounts as soon as the live list drops it.
@@ -37,8 +38,10 @@ export function FileItem({ file }: { file: File }) {
       <Button
         variant="ghost"
         size="icon-sm"
-        render={<a href={file.url} aria-label={`Download ${file.name}`} />}
-        nativeButton={false}
+        onClick={() =>
+          download(downloadUrl({ id: file._id })).catch(toastError)
+        }
+        aria-label={`Download ${file.name}`}
       >
         <IconDownload />
       </Button>

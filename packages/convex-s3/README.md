@@ -130,6 +130,13 @@ A ticket's token proves the follow-up calls come from whoever got it. Tickets
 that are never completed are cleaned up when they expire: an hour after a
 single upload's URL, 24 hours for multipart.
 
+**Rate-limit tickets.** Anyone who can call `generateUploadUrl` can make
+the bucket hold up to `maxSize` per ticket until it expires, so
+`checkUpload` should authenticate the caller and cap how many tickets they
+get, for example with
+[`@convex-dev/rate-limiter`](https://www.convex.dev/components/rate-limiter)
+keyed by user (the examples cap globally, having no users).
+
 `checkUpload` can also return `key`, `contentType`, `put` (headers and
 metadata to store) and the multipart settings. The other checks are
 `checkReadKey` (`getMetadata`), `checkReadBucket` (`listMetadata`) and
@@ -144,7 +151,7 @@ the component.
 | --- | --- | --- |
 | `generateUploadUrl(ctx, options)` | mutation | A ticket: `key` or `prefix` + `fileName`, `size`, `maxSize`, `contentType`, `cacheControl`, `contentDisposition`, `metadata`, `tagging`, `storageClass`, `serverSideEncryption`, `kmsKeyId`, `checksumSha256`, `ifNoneMatch`, `expiresIn` |
 | `generateUploadPost(ctx, options)` | mutation | A form POST whose policy caps the size (`maxSize`, `minSize`). Not on R2 |
-| `store(ctx, blob, options)` | action | Uploads bytes from an action. Returns the key |
+| `store(ctx, blob, options)` | action | Uploads bytes from an action, in parts above `multipartThreshold` (64 MB). Returns the key |
 | `syncMetadata(ctx, key)` | action | HEADs a key and records it |
 | `getUrl(ctx, key, options)` | any | A presigned GET (15 minutes by default, 7 days at most), with `versionId` and `responseContentDisposition`, `responseContentType`, `responseCacheControl` |
 | `getPublicUrl(ctx, key)` | any | The URL under `S3_PUBLIC_URL`, or null |
@@ -155,12 +162,16 @@ the component.
 | `deletePrefix(ctx, prefix)` | mutation | Everything under a non-empty prefix, in scheduled steps |
 | `headObject(ctx, key)`, `getObject(ctx, key, { range })` | action | What S3 has now; bytes of a small object or a range |
 | `listObjects(ctx, { prefix, delimiter, cursor, limit })` | action | The bucket's own listing (`ListObjectsV2`), with folders |
-| `copyObject(ctx, from, to, put?)`, `moveObject(...)` | action | Server-side copy (up to 5 GB); `put` replaces headers and metadata |
+| `copyObject(ctx, from, to, put?)`, `moveObject(...)` | action | Server-side copy, part by part above 5 GB (`UploadPartCopy`); `put` replaces headers and metadata |
 | `putObjectTagging(ctx, key, tags)` | action | Replaces the object's tags |
 
-A presigned URL from a query is signed when the query runs, and Convex may
-serve that result from its cache for a while, so give URLs returned by
-queries a comfortable `expiresIn`, or use public URLs.
+**URLs in queries expire on screen.** A query signs its URLs when it runs,
+and a subscription keeps that result until the data changes, so a page left
+open longer than `expiresIn` shows dead links. Return keys from list queries
+and sign a URL when it's used, from a mutation (`getUrl` works there too),
+or use public URLs. The examples do this (`files.downloadUrl`,
+`drive.fileUrl`). `getMetadata` and `listMetadata` still include `url`, as the
+R2 component's do, for one-off reads.
 
 ## Testing
 

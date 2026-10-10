@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 
+import rateLimiter from "@convex-dev/rate-limiter/test"
 import { FakeS3, register } from "convex-s3/testing"
 import { convexTest } from "convex-test"
 import { vi } from "vitest"
@@ -16,6 +17,7 @@ export function setup() {
   vi.stubGlobal("fetch", s3.fetch)
   const t = convexTest(schema, modules)
   register(t)
+  rateLimiter.register(t)
   return { t, s3 }
 }
 

@@ -22,6 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@convex-dev/rate-limiter": "^0.4.2",
     "convex": "^1.46.0",
     "convex-helpers": "^0.1.128",
     "convex-s3": "workspace:*"

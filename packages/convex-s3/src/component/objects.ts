@@ -110,13 +110,22 @@ async function copyAndRecord(
   checkKey(args.destinationKey)
   checkPutOptions(args.put)
   const config = s3Config()
-  await copyInS3(config, args.sourceKey, args.destinationKey, { put: args.put })
+  const source = await headInS3(config, args.sourceKey)
+  if (source === null) {
+    throw new ConvexError(`There is no object at ${args.sourceKey}`)
+  }
+  // Above 5 GB the copy goes part by part, which needs the source's size
+  // and headers.
+  await copyInS3(config, args.sourceKey, args.destinationKey, {
+    put: args.put,
+    source,
+  })
   const info = await headInS3(config, args.destinationKey)
   if (info === null) throw new ConvexError("The copy didn't arrive")
   return await recordObject(ctx, config, info)
 }
 
-/** Copies an object inside the bucket and records the copy. Up to 5 GB. */
+/** Copies an object inside the bucket and records the copy, in parts above 5 GB. */
 export const copyObject = action({
   args: {
     sourceKey: v.string(),

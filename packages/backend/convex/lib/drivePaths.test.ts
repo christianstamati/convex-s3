@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
+import { attachment } from "./attachment"
 import {
-  attachment,
   cleanName,
   folderPrefix,
   nameOf,

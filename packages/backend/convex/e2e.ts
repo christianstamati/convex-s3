@@ -199,6 +199,27 @@ export const run = internalAction({
       return `etag ${metadata.etag}`
     })
 
+    await check("store in parts from an action", async () => {
+      const size = 11 * MiB
+      const data = new Uint8Array(size).map((_, i) => (i * 7) % 256)
+      const key = await s3.store(ctx, data, {
+        prefix,
+        fileName: "stored-in-parts.bin",
+        multipartThreshold: 5 * MiB,
+        partSize: 5 * MiB,
+      })
+      const info = await s3.headObject(ctx, key)
+      expectEqual(info?.size, size, "size")
+      expectEqual(info?.etag?.endsWith("-3"), true, "three parts")
+      const tail = await s3.getObject(ctx, key, { range: `bytes=${size - 3}-` })
+      expectEqual(
+        Array.from(new Uint8Array(tail?.data ?? new ArrayBuffer(0))),
+        Array.from(data.slice(size - 3)),
+        "last bytes"
+      )
+      return `etag ${info?.etag}`
+    })
+
     await check("multipart: abort", async () => {
       const ticket = await s3.generateUploadUrl(ctx, {
         prefix,

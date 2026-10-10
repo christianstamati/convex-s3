@@ -205,6 +205,9 @@ export class FakeS3 {
       const upload = this.uploads.get(uploadId)
       if (!upload || upload.key !== key)
         throw new Refusal(404, "NoSuchUpload", uploadId)
+      if (method === "PUT" && request.headers.has("x-amz-copy-source")) {
+        return this.copyPart(request, upload, Number(q.get("partNumber")))
+      }
       if (method === "PUT")
         return await this.putPart(upload, Number(q.get("partNumber")), body)
       if (method === "GET") return this.listParts(upload)
@@ -484,6 +487,26 @@ export class FakeS3 {
     const etag = hexOf(md5(body))
     upload.parts.set(partNumber, { data: body, etag })
     return new Response(null, { status: 200, headers: { etag: `"${etag}"` } })
+  }
+
+  /** UploadPartCopy: a byte range of another object becomes a part. */
+  private copyPart(request: Request, upload: FakeUpload, partNumber: number) {
+    const source = decodeURIComponent(
+      (request.headers.get("x-amz-copy-source") ?? "").split("?")[0] ?? ""
+    ).replace(`/${this.config.bucket}/`, "")
+    const original = this.require(source)
+    const range = /^bytes=(\d+)-(\d+)$/.exec(
+      request.headers.get("x-amz-copy-source-range") ?? ""
+    )
+    const data = range
+      ? original.data.slice(Number(range[1]), Number(range[2]) + 1)
+      : original.data.slice()
+    const etag = hexOf(md5(data))
+    upload.parts.set(partNumber, { data, etag })
+    return xmlResponse(
+      200,
+      `<CopyPartResult><ETag>&quot;${etag}&quot;</ETag></CopyPartResult>`
+    )
   }
 
   private listParts(upload: FakeUpload) {

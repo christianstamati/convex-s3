@@ -26,6 +26,7 @@ import { MoveDialog } from "@/components/drive/MoveDialog"
 import { RenameDialog } from "@/components/drive/RenameDialog"
 import { toastError } from "@/lib/errors"
 import { formatBytes, formatDate } from "@/lib/format"
+import { download, openInNewTab } from "@/lib/openUrl"
 
 type DriveFile = {
   key: string
@@ -33,8 +34,6 @@ type DriveFile = {
   size: number
   contentType?: string
   lastModified: number
-  url: string
-  downloadUrl: string
 }
 
 function iconFor(contentType: string | undefined) {
@@ -49,6 +48,7 @@ function iconFor(contentType: string | undefined) {
 /** A file: opens in a new tab, with download, rename, move and delete. */
 export function DriveFileRow({ file }: { file: DriveFile }) {
   const [dialog, setDialog] = useState<"rename" | "move" | null>(null)
+  const fileUrl = useConvexMutation(api.drive.fileUrl)
   const remove = useMutation({
     mutationFn: useConvexMutation(api.drive.removeFile),
     // On the hook: the row unmounts as soon as the live list drops it.
@@ -63,15 +63,18 @@ export function DriveFileRow({ file }: { file: DriveFile }) {
 
   return (
     <li className="flex items-center gap-3 py-2">
-      <a
-        href={file.url}
-        target="_blank"
-        rel="noreferrer"
-        className="flex min-w-0 flex-1 items-center gap-3 text-sm hover:underline"
+      <button
+        type="button"
+        onClick={() =>
+          openInNewTab(fileUrl({ key: file.key, download: false })).catch(
+            toastError
+          )
+        }
+        className="flex min-w-0 flex-1 items-center gap-3 text-left text-sm hover:underline"
       >
         <Icon className="size-5 shrink-0 text-muted-foreground" />
         <span className="truncate">{file.name}</span>
-      </a>
+      </button>
       <span className="hidden w-20 text-right text-muted-foreground text-sm tabular-nums sm:block">
         {formatBytes(file.size)}
       </span>
@@ -91,7 +94,13 @@ export function DriveFileRow({ file }: { file: DriveFile }) {
           <IconDotsVertical />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem render={<a href={file.downloadUrl} />}>
+          <DropdownMenuItem
+            onClick={() =>
+              download(fileUrl({ key: file.key, download: true })).catch(
+                toastError
+              )
+            }
+          >
             <IconDownload />
             Download
           </DropdownMenuItem>
