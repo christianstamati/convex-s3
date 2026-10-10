@@ -12,7 +12,7 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
   // Room for dropping a folder tree of a few hundred files.
   uploads: { kind: "token bucket", rate: 300, period: MINUTE, capacity: 300 },
   // Creating, renaming, moving and deleting folders and files.
-  driveWrites: {
+  writes: {
     kind: "token bucket",
     rate: 120,
     period: MINUTE,
@@ -23,7 +23,7 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
 /** Takes one from the named limit, or throws a message people can read. */
 export async function limit(
   ctx: MutationCtx | ActionCtx,
-  name: "uploads" | "driveWrites"
+  name: "uploads" | "writes"
 ) {
   const { ok, retryAfter } = await rateLimiter.limit(ctx, name)
   if (!ok) {

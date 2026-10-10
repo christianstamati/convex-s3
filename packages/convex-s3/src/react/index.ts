@@ -5,7 +5,7 @@
  * resumes after a reload. Progress comes from the browser's upload events.
  */
 import { useConvex } from "convex/react"
-import type { FunctionReference } from "convex/server"
+import { type FunctionReference, getFunctionName } from "convex/server"
 import { useCallback } from "react"
 import type { ObjectMetadata, UploadTicket } from "../component/validators"
 
@@ -116,13 +116,14 @@ export async function uploadFile(
   options: UploadFileOptions = {}
 ): Promise<string> {
   const progress = progressReporter(file.size, options.onProgress)
-  const saved = options.resume === false ? null : loadResumable(file, options)
+  const saved =
+    options.resume === false ? null : loadResumable(api, file, options)
   if (saved !== null && api.createMultipartUpload) {
     try {
       return await uploadParts(client, api, file, saved, options, progress)
     } catch (error) {
       if (isAbort(error)) throw error
-      forgetResumable(file, options)
+      forgetResumable(api, file, options)
       // The saved upload expired or broke: start over.
     }
   }
@@ -136,7 +137,7 @@ export async function uploadFile(
   const keyToken = { key: ticket.key, token: ticket.token }
 
   if (ticket.method === "multipart") {
-    saveResumable(file, options, keyToken, ticket.expiresAt)
+    saveResumable(api, file, options, keyToken, ticket.expiresAt)
     return await uploadParts(client, api, file, keyToken, options, progress)
   }
 
@@ -272,11 +273,11 @@ async function uploadParts(
       ...keyToken,
       parts: Array.from(done, ([partNumber, etag]) => ({ partNumber, etag })),
     })
-    forgetResumable(file, options)
+    forgetResumable(api, file, options)
     return keyToken.key
   } catch (error) {
     if (isAbort(error)) {
-      forgetResumable(file, options)
+      forgetResumable(api, file, options)
       if (api.abortUpload) {
         await client.action(api.abortUpload, keyToken).catch(() => undefined)
       }
@@ -298,6 +299,14 @@ function send(
   onProgress: (loaded: number) => void,
   signal: AbortSignal | undefined
 ) {
+  // What a finished request reports: the file's size, even inside a form.
+  const sentSize =
+    body instanceof Blob
+      ? body.size
+      : Array.from(body.values()).reduce(
+          (n, value) => n + (value instanceof Blob ? value.size : 0),
+          0
+        )
   return new Promise<string | null>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new DOMException("The upload was cancelled", "AbortError"))
@@ -314,7 +323,7 @@ function send(
     xhr.onload = () => {
       signal?.removeEventListener("abort", abort)
       if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(body instanceof Blob ? body.size : 0)
+        onProgress(sentSize)
         resolve(xhr.getResponseHeader("ETag"))
       } else {
         const code = /<Code>([^<]+)<\/Code>/.exec(xhr.responseText)?.[1]
@@ -361,16 +370,19 @@ function progressReporter(
 
 // Resuming: the ticket of a multipart upload, kept per file until it ends.
 
-function storageKey(file: File, options: UploadFileOptions) {
-  return `convex-s3:${options.prefix ?? ""}:${file.name}:${file.size}:${file.lastModified}`
+/** Per API (module) and file, so a ticket never resumes in another API. */
+function storageKey(api: UploadApi, file: File, options: UploadFileOptions) {
+  const module = getFunctionName(api.generateUploadUrl)
+  return `convex-s3:${module}:${options.prefix ?? ""}:${file.name}:${file.size}:${file.lastModified}`
 }
 
 function loadResumable(
+  api: UploadApi,
   file: File,
   options: UploadFileOptions
 ): KeyToken | null {
   try {
-    const raw = localStorage.getItem(storageKey(file, options))
+    const raw = localStorage.getItem(storageKey(api, file, options))
     if (!raw) return null
     const saved = JSON.parse(raw) as KeyToken & { expiresAt: number }
     return saved.expiresAt > Date.now()
@@ -382,6 +394,7 @@ function loadResumable(
 }
 
 function saveResumable(
+  api: UploadApi,
   file: File,
   options: UploadFileOptions,
   keyToken: KeyToken,
@@ -390,7 +403,7 @@ function saveResumable(
   if (options.resume === false) return
   try {
     localStorage.setItem(
-      storageKey(file, options),
+      storageKey(api, file, options),
       JSON.stringify({ ...keyToken, expiresAt })
     )
   } catch {
@@ -398,9 +411,13 @@ function saveResumable(
   }
 }
 
-function forgetResumable(file: File, options: UploadFileOptions) {
+function forgetResumable(
+  api: UploadApi,
+  file: File,
+  options: UploadFileOptions
+) {
   try {
-    localStorage.removeItem(storageKey(file, options))
+    localStorage.removeItem(storageKey(api, file, options))
   } catch {
     // Nothing saved.
   }

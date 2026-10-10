@@ -23,8 +23,11 @@ import {
   vSyncResult,
 } from "./validators"
 
-/** Background deletes retry this many times, backing off 2^n seconds. */
-const MAX_DELETE_ATTEMPTS = 6
+/**
+ * Background deletes retry this many times, backing off 2^n seconds (about
+ * 17 minutes in all), then log what they couldn't delete.
+ */
+const MAX_DELETE_ATTEMPTS = 10
 
 /** What S3 has for the key right now, or null. */
 export const headObject = action({
@@ -150,10 +153,12 @@ export const moveObject = action({
       throw new ConvexError("The source and destination are the same key")
     }
     const result = await copyAndRecord(ctx, args)
-    await deleteObject(s3Config(), args.sourceKey)
+    // The row first: a crash in between leaves an unlisted object, never a
+    // listed one that's gone.
     await ctx.runMutation(internal.lib.deleteMetadata, {
       keys: [args.sourceKey],
     })
+    await deleteObject(s3Config(), args.sourceKey)
     return result
   },
 })

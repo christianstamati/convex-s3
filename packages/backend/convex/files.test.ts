@@ -1,11 +1,6 @@
-import { afterEach, describe, expect, test, vi } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import { api } from "./_generated/api"
 import { setup } from "./test.setup"
-
-afterEach(() => {
-  vi.unstubAllEnvs()
-  vi.unstubAllGlobals()
-})
 
 describe("files", () => {
   test("an upload lands under uploads/ and is listed", async () => {
@@ -60,7 +55,6 @@ describe("files", () => {
   })
 
   test("removing a file deletes its object", async () => {
-    vi.useFakeTimers()
     const { t, s3 } = setup()
     const ticket = await t.mutation(api.files.generateUploadUrl, {
       fileName: "a.txt",
@@ -82,6 +76,5 @@ describe("files", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers)
     expect(await t.query(api.files.list, {})).toEqual([])
     expect(s3.objects.has(ticket.key)).toBe(false)
-    vi.useRealTimers()
   })
 })

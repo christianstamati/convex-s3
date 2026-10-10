@@ -9,7 +9,7 @@ import {
 import { ConvexError, v } from "convex/values"
 import { paginator } from "convex-helpers/server/pagination"
 import { publicUrl } from "../shared/config"
-import { prefixEnd } from "../shared/keys"
+import { keyAfter, prefixEnd } from "../shared/keys"
 import { presignGet } from "../shared/s3"
 import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
@@ -96,18 +96,15 @@ export const listMetadata = query({
     expiresIn: v.optional(v.number()),
   },
   returns: paginationResultValidator(vObjectMetadata),
-  handler: async (ctx, { prefix, paginationOpts, expiresIn }) => {
+  handler: async (ctx, { prefix = "", paginationOpts, expiresIn }) => {
     const config = s3Config()
+    const end = prefixEnd(prefix)
     const result = await paginator(ctx.db, schema)
       .query("objects")
-      .withIndex("bucket_key", (q) =>
-        prefix
-          ? q
-              .eq("bucket", config.bucket)
-              .gte("key", prefix)
-              .lt("key", prefixEnd(prefix))
-          : q.eq("bucket", config.bucket)
-      )
+      .withIndex("bucket_key", (q) => {
+        const from = q.eq("bucket", config.bucket).gte("key", prefix)
+        return end === null ? from : from.lt("key", end)
+      })
       .paginate(paginationOpts)
     return {
       ...result,
@@ -118,7 +115,7 @@ export const listMetadata = query({
   },
 })
 
-/** Rows read per index query while walking a folder. */
+/** Rows read per index query while walking a run of objects, at most. */
 const FOLDER_BATCH = 100
 
 /**
@@ -126,6 +123,10 @@ const FOLDER_BATCH = 100
  * delimiter: the objects directly in it and the folders (common prefixes)
  * below it. Live, since it reads the recorded objects. A folder's own
  * marker (a key equal to `prefix`, such as `photos/`) isn't listed.
+ *
+ * It walks the index in key order. On reaching a folder it starts a new
+ * range past everything in it, reading one row; runs of objects are read in
+ * growing batches. Past `limit` it returns a `cursor` to continue from.
  */
 export const listFolder = query({
   args: {
@@ -133,12 +134,15 @@ export const listFolder = query({
     delimiter: v.optional(v.string()),
     /** Folders and objects together, 1,000 at most (the default). */
     limit: v.optional(v.number()),
+    /** A previous call's `cursor`, to continue where it stopped. */
+    cursor: v.optional(v.union(v.string(), v.null())),
     expiresIn: v.optional(v.number()),
   },
   returns: v.object({
     folders: v.array(v.string()),
     objects: v.array(vObjectMetadata),
     isTruncated: v.boolean(),
+    cursor: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     const config = s3Config()
@@ -146,22 +150,24 @@ export const listFolder = query({
     const delimiter = args.delimiter ?? "/"
     const limit = Math.max(1, Math.min(args.limit ?? 1000, 1000))
     const end = prefixEnd(prefix)
+    if (args.cursor && !args.cursor.startsWith(prefix)) {
+      throw new ConvexError("That cursor belongs to another prefix")
+    }
     const folders: string[] = []
     const rows: Doc<"objects">[] = []
-    // Walk the index in key order. On reaching a folder, skip past every key
-    // in it with one new range, so a folder costs one read, not one per key.
-    let after: string | null = null
+    // Where the next read starts, inclusive.
+    let start = args.cursor || prefix
+    let batchSize = 1
     let isTruncated = false
     walk: for (;;) {
+      const from = start
       const batch: Doc<"objects">[] = await ctx.db
         .query("objects")
         .withIndex("bucket_key", (q) => {
-          const inBucket = q.eq("bucket", config.bucket)
-          return after === null
-            ? inBucket.gte("key", prefix).lt("key", end)
-            : inBucket.gt("key", after).lt("key", end)
+          const range = q.eq("bucket", config.bucket).gte("key", from)
+          return end === null ? range : range.lt("key", end)
         })
-        .take(FOLDER_BATCH)
+        .take(batchSize)
       for (const row of batch) {
         if (folders.length + rows.length >= limit) {
           isTruncated = true
@@ -169,19 +175,22 @@ export const listFolder = query({
         }
         const rest = row.key.slice(prefix.length)
         const cut = delimiter === "" ? -1 : rest.indexOf(delimiter)
-        if (rest === "") {
-          after = row.key
-        } else if (cut === -1) {
-          rows.push(row)
-          after = row.key
-        } else {
-          const folder = prefix + rest.slice(0, cut + delimiter.length)
-          folders.push(folder)
-          after = prefixEnd(folder)
-          continue walk
+        if (cut === -1 || rest === "") {
+          // An object, or the folder's own marker (not listed).
+          if (rest !== "") rows.push(row)
+          start = keyAfter(row.key)
+          continue
         }
+        const folder = prefix + rest.slice(0, cut + delimiter.length)
+        folders.push(folder)
+        const next = prefixEnd(folder)
+        if (next === null) break walk
+        start = next
+        batchSize = 1
+        continue walk
       }
-      if (batch.length < FOLDER_BATCH) break
+      if (batch.length < batchSize) break
+      batchSize = Math.min(batchSize * 4, FOLDER_BATCH)
     }
     return {
       folders,
@@ -191,6 +200,7 @@ export const listFolder = query({
         )
       ),
       isTruncated,
+      cursor: isTruncated ? start : null,
     }
   },
 })
@@ -264,11 +274,22 @@ export const deletePrefix = mutation({
   },
 })
 
-/** Writes what a HEAD saw. Returns whether the key was new. */
+/**
+ * Writes what a HEAD saw. Returns whether the key was new. With
+ * `finishUpload`, removes that ticket in the same transaction.
+ */
 export const upsertMetadata = internalMutation({
-  args: vStoredObject,
+  args: {
+    object: v.object(vStoredObject),
+    finishUpload: v.optional(v.id("uploads")),
+  },
   returns: v.boolean(),
-  handler: async (ctx, object) => {
+  handler: async (ctx, { object, finishUpload }) => {
+    if (finishUpload !== undefined) {
+      if ((await ctx.db.get("uploads", finishUpload)) !== null) {
+        await ctx.db.delete("uploads", finishUpload)
+      }
+    }
     const row = await ctx.db
       .query("objects")
       .withIndex("bucket_key", (q) =>
@@ -300,9 +321,11 @@ export const deleteMetadataPrefix = internalMutation({
     const { bucket } = s3Config()
     const rows = await ctx.db
       .query("objects")
-      .withIndex("bucket_key", (q) =>
-        q.eq("bucket", bucket).gte("key", prefix).lt("key", prefixEnd(prefix))
-      )
+      .withIndex("bucket_key", (q) => {
+        const from = q.eq("bucket", bucket).gte("key", prefix)
+        const end = prefixEnd(prefix)
+        return end === null ? from : from.lt("key", end)
+      })
       .take(DELETE_BATCH)
     for (const row of rows) await ctx.db.delete("objects", row._id)
     if (rows.length === DELETE_BATCH) {

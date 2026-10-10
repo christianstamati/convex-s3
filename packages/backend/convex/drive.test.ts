@@ -1,12 +1,6 @@
-import { afterEach, describe, expect, test, vi } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import { api } from "./_generated/api"
 import { setup, type TestConvex } from "./test.setup"
-
-afterEach(() => {
-  vi.useRealTimers()
-  vi.unstubAllEnvs()
-  vi.unstubAllGlobals()
-})
 
 /** What the browser does: ask for a ticket, PUT, sync. */
 async function upload(
@@ -125,6 +119,79 @@ describe("drive", () => {
     expect(await names(t, "B/")).toEqual({ folders: ["A"], files: ["x.txt"] })
   })
 
+  test("a folder move that stopped halfway can be run again", async () => {
+    const { t, s3 } = setup()
+    await t.action(api.drive.createFolder, { path: "", name: "Old" })
+    for (const name of ["a.txt", "b.txt", "c.txt"]) {
+      await upload(t, "Old/", name, name)
+    }
+    // S3 fails copying b.txt and deleting a.txt's source: the move stops
+    // with some keys moved, a.txt copied but its source still there, and b
+    // not copied. (Parts run in parallel, so which of the others finished
+    // varies; the second run must finish from any of those states.)
+    s3.failWhen = (request) =>
+      (request.headers.get("x-amz-copy-source")?.endsWith("/Old/b.txt") ??
+        false) ||
+      (request.method === "DELETE" && request.url.endsWith("/Old/a.txt"))
+    await expect(
+      t.action(api.drive.renameFolder, { path: "Old/", name: "New" })
+    ).rejects.toThrow()
+
+    s3.failWhen = undefined
+    expect(
+      await t.action(api.drive.renameFolder, { path: "Old/", name: "New" })
+    ).toBe("New/")
+    expect([...s3.objects.keys()].sort()).toEqual([
+      "drive/New/",
+      "drive/New/a.txt",
+      "drive/New/b.txt",
+      "drive/New/c.txt",
+    ])
+    expect(await names(t, "")).toEqual({ folders: ["New"], files: [] })
+  })
+
+  test("a move onto an existing folder is refused", async () => {
+    const { t } = setup()
+    await upload(t, "A/", "x.txt")
+    await upload(t, "B/", "y.txt")
+    await expect(
+      t.action(api.drive.renameFolder, { path: "A/", name: "B" })
+    ).rejects.toThrow("already there")
+  })
+
+  test("opens only safe types in place", async () => {
+    const { t } = setup()
+    const page = new TextEncoder().encode("<script>alert(1)</script>")
+    const ticket = await t.mutation(api.drive.generateUploadUrl, {
+      fileName: "page.html",
+      size: page.length,
+      contentType: "text/html",
+      prefix: "",
+    })
+    if (ticket.method !== "single") throw new Error("single expected")
+    await fetch(ticket.url, {
+      method: "PUT",
+      headers: ticket.headers,
+      body: page,
+    })
+    await t.action(api.drive.syncMetadata, {
+      key: ticket.key,
+      token: ticket.token,
+    })
+    const html = await t.mutation(api.drive.fileUrl, {
+      key: ticket.key,
+      download: false,
+    })
+    expect(html).toContain("response-content-disposition=attachment")
+
+    const text = await upload(t, "", "notes.txt", "hi")
+    const open = await t.mutation(api.drive.fileUrl, {
+      key: text,
+      download: false,
+    })
+    expect(open).toContain("response-content-disposition=inline")
+  })
+
   test("renames a file", async () => {
     const { t } = setup()
     const key = await upload(t, "", "draft.txt")
@@ -136,7 +203,6 @@ describe("drive", () => {
   })
 
   test("deleting a folder deletes its prefix", async () => {
-    vi.useFakeTimers()
     const { t, s3 } = setup()
     await upload(t, "Trash/", "1.txt")
     await upload(t, "Trash/deep/", "2.txt")

@@ -96,7 +96,9 @@ export type GetUrlOptions = {
 export type UploadRequest = {
   fileName?: string | undefined
   contentType?: string | undefined
-  size?: number | undefined
+  /** Always declared: it's signed into the upload. */
+  size: number
+  /** What the browser asks for; it counts only if `checkUpload` returns it. */
   prefix?: string | undefined
 }
 
@@ -105,7 +107,10 @@ export type UploadRequest = {
  * is; throw to refuse it.
  */
 export type UploadPolicy = {
-  /** Where the key goes, whatever prefix the browser asked for. */
+  /**
+   * Where the key goes. The browser's `request.prefix` is ignored unless you
+   * return it here (after checking it).
+   */
   prefix?: string
   /** The whole key, instead of `<prefix><uuid>/<fileName>`. */
   key?: string
@@ -152,7 +157,8 @@ type Callbacks<DataModel extends GenericDataModel> = {
   checkReadBucket?: (
     ctx: GenericQueryCtx<DataModel>,
     bucket: string,
-    prefix: string | undefined
+    /** "" for the whole bucket. */
+    prefix: string
   ) => void | Promise<void>
   checkDelete?: (
     ctx: GenericMutationCtx<DataModel>,
@@ -395,11 +401,18 @@ export class S3 {
   async listFolder(
     ctx: RunQueryCtx,
     prefix = "",
-    options: { delimiter?: string; limit?: number; expiresIn?: number } = {}
+    options: {
+      delimiter?: string
+      limit?: number
+      /** A previous call's `cursor`, to continue where it stopped. */
+      cursor?: string | null
+      expiresIn?: number
+    } = {}
   ): Promise<{
     folders: string[]
     objects: ObjectMetadata[]
     isTruncated: boolean
+    cursor: string | null
   }> {
     return await ctx.runQuery(this.component.lib.listFolder, {
       prefix,
@@ -545,7 +558,9 @@ export class S3 {
         args: {
           fileName: v.optional(v.string()),
           contentType: v.optional(v.string()),
-          size: v.optional(v.number()),
+          // Required, so it's always signed into the upload: S3 then
+          // refuses a file of any other size.
+          size: v.number(),
           prefix: v.optional(v.string()),
         },
         returns: vUploadTicket,
@@ -556,16 +571,19 @@ export class S3 {
               await bucketOf(ctx),
               request
             )) ?? undefined
-          const prefix = normalizePrefix(policy?.prefix ?? request.prefix)
-          const contentType = policy?.contentType ?? request.contentType
+          // The browser's prefix is only a request: it counts when
+          // checkUpload returns it.
+          const prefix = normalizePrefix(policy?.prefix)
+          // Always signed, so the browser can't store another type.
+          const contentType =
+            policy?.contentType ||
+            request.contentType ||
+            "application/octet-stream"
           return await ctx.runMutation(component.uploads.generateUploadUrl, {
             key: policy?.key ?? newKey(prefix, request.fileName),
             size: request.size,
             maxSize: policy?.maxSize,
-            put: definedOnly({
-              ...policy?.put,
-              contentType: contentType || undefined,
-            }),
+            put: definedOnly({ ...policy?.put, contentType }),
             multipartThreshold: policy?.multipartThreshold,
             partSize: policy?.partSize,
           })
@@ -661,7 +679,7 @@ export class S3 {
           await required(options.checkReadBucket, "checkReadBucket")(
             ctx as GenericQueryCtx<DataModel>,
             await bucketOf(ctx),
-            prefix
+            prefix ?? ""
           )
           return await ctx.runQuery(component.lib.listMetadata, {
             prefix,

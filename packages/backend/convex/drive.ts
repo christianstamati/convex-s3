@@ -5,10 +5,13 @@
 // deleting one deletes the prefix. Anyone can use it (the example has no
 // users); a real app checks the caller in each function.
 import { ConvexError, v } from "convex/values"
+import { internal } from "./_generated/api"
 import type { DataModel } from "./_generated/dataModel"
 import {
   type ActionCtx,
   action,
+  internalMutation,
+  internalQuery,
   type MutationCtx,
   mutation,
   type QueryCtx,
@@ -39,6 +42,22 @@ const MOVE_CONCURRENCY = 8
 const URL_LIFETIME = 5 * 60
 
 /** Any context that can read: queries, mutations (checkUpload) and actions. */
+/** Types opened in the browser rather than downloaded. */
+const INLINE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "application/pdf",
+  "text/plain",
+  "video/mp4",
+  "video/webm",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+])
+
 type ReadCtx = QueryCtx | MutationCtx | ActionCtx
 
 function requirePath(path: string) {
@@ -162,14 +181,16 @@ export const fileUrl = mutation({
   returns: v.string(),
   handler: async (ctx, { key, download }) => {
     requireFileKey(key)
-    if ((await s3.getMetadata(ctx, key)) === null) {
-      throw new ConvexError("That file is gone")
-    }
+    const file = await s3.getMetadata(ctx, key)
+    if (file === null) throw new ConvexError("That file is gone")
+    // Anyone can upload here, so only types a browser shows safely open in
+    // place; anything else (HTML, SVG, scripts) downloads.
+    const type = file.contentType?.split(";")[0]?.trim().toLowerCase() ?? ""
+    const inline = !download && INLINE_TYPES.has(type)
     return await s3.getUrl(ctx, key, {
       expiresIn: URL_LIFETIME,
-      responseContentDisposition: download
-        ? attachment(nameOf(key))
-        : undefined,
+      responseContentDisposition: inline ? "inline" : attachment(nameOf(key)),
+      responseContentType: inline ? type : undefined,
     })
   },
 })
@@ -179,7 +200,7 @@ export const createFolder = action({
   args: { path: v.string(), name: v.string() },
   returns: v.string(),
   handler: async (ctx, { path, name }): Promise<string> => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     const parent = folderPrefix(requirePath(path))
     const key = await freeKey(ctx, parent, requireName(name), true)
     await s3.store(ctx, new Uint8Array(0), {
@@ -199,44 +220,114 @@ async function moveFile(ctx: ActionCtx, key: string, destination: string) {
   await s3.moveObject(ctx, key, destination)
 }
 
-/**
- * Moves every object under one prefix to another: S3 has no folders, so a
- * folder moves key by key (copy, then delete).
- */
-async function moveFolder(ctx: ActionCtx, from: string, to: string) {
-  if (to === from) return
-  if (to.startsWith(from)) {
-    throw new ConvexError("A folder can't go inside itself")
-  }
-  if (await exists(ctx, to)) {
-    throw new ConvexError(`"${nameOf(to)}" is already there`)
-  }
-  const keys: string[] = []
+/** Every object under a prefix, from S3's own listing. */
+async function listAll(ctx: ActionCtx, prefix: string) {
+  const objects: { key: string; size: number; etag?: string | undefined }[] = []
   let cursor: string | null = null
   do {
-    const page = await s3.listObjects(ctx, { prefix: from, cursor })
-    keys.push(...page.objects.map((object) => object.key))
-    if (keys.length > MAX_MOVE) {
+    const page = await s3.listObjects(ctx, { prefix, cursor })
+    objects.push(...page.objects)
+    if (objects.length > MAX_MOVE) {
       throw new ConvexError(
         `This example moves folders of up to ${MAX_MOVE} items`
       )
     }
     cursor = page.isDone ? null : page.cursor
   } while (cursor !== null)
-  for (let i = 0; i < keys.length; i += MOVE_CONCURRENCY) {
+  return objects
+}
+
+/**
+ * Moves every object under one prefix to another: S3 has no folders, so a
+ * folder moves key by key (copy, then delete). The move is recorded while
+ * it runs, so one that stopped halfway can be run again: the keys it moved
+ * are then expected at the destination, and a destination key holding an
+ * exact copy (same size and ETag) of its source counts as moved. Anything
+ * else there is a collision, refused before anything moves.
+ */
+async function moveFolder(ctx: ActionCtx, from: string, to: string) {
+  if (to === from) return
+  if (to.startsWith(from)) {
+    throw new ConvexError("A folder can't go inside itself")
+  }
+  const resuming: boolean = await ctx.runQuery(internal.drive.moveRecorded, {
+    from,
+    to,
+  })
+  const sources = await listAll(ctx, from)
+  const there = new Map((await listAll(ctx, to)).map((o) => [o.key, o]))
+  const pending: { from: string; to: string }[] = []
+  const alreadyMoved: string[] = []
+  for (const source of sources) {
+    const destination = to + source.key.slice(from.length)
+    const copy = there.get(destination)
+    there.delete(destination)
+    if (copy === undefined) {
+      pending.push({ from: source.key, to: destination })
+    } else if (copy.size === source.size && copy.etag === source.etag) {
+      alreadyMoved.push(source.key)
+    } else {
+      throw new ConvexError(`"${nameOf(to)}" is already there`)
+    }
+  }
+  // Keys at the destination no source accounts for: moved by this move
+  // before it stopped, or another folder's.
+  if (there.size > 0 && !resuming) {
+    throw new ConvexError(`"${nameOf(to)}" is already there`)
+  }
+  await ctx.runMutation(internal.drive.recordMove, { from, to })
+  for (let i = 0; i < pending.length; i += MOVE_CONCURRENCY) {
     await Promise.all(
-      keys
+      pending
         .slice(i, i + MOVE_CONCURRENCY)
-        .map((key) => s3.moveObject(ctx, key, to + key.slice(from.length)))
+        .map((move) => s3.moveObject(ctx, move.from, move.to))
     )
   }
+  if (alreadyMoved.length > 0) await s3.deleteObjects(ctx, alreadyMoved)
+  await ctx.runMutation(internal.drive.forgetMove, { from, to })
 }
+
+export const moveRecorded = internalQuery({
+  args: { from: v.string(), to: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { from, to }) =>
+    (await ctx.db
+      .query("driveMoves")
+      .withIndex("by_from_to", (q) => q.eq("from", from).eq("to", to))
+      .first()) !== null,
+})
+
+export const recordMove = internalMutation({
+  args: { from: v.string(), to: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { from, to }) => {
+    const existing = await ctx.db
+      .query("driveMoves")
+      .withIndex("by_from_to", (q) => q.eq("from", from).eq("to", to))
+      .first()
+    if (existing === null) await ctx.db.insert("driveMoves", { from, to })
+    return null
+  },
+})
+
+export const forgetMove = internalMutation({
+  args: { from: v.string(), to: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { from, to }) => {
+    const moves = await ctx.db
+      .query("driveMoves")
+      .withIndex("by_from_to", (q) => q.eq("from", from).eq("to", to))
+      .collect()
+    for (const move of moves) await ctx.db.delete("driveMoves", move._id)
+    return null
+  },
+})
 
 export const renameFile = action({
   args: { key: v.string(), name: v.string() },
   returns: v.null(),
   handler: async (ctx, { key, name }) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     requireFileKey(key)
     await moveFile(ctx, key, parentOf(key) + requireName(name))
     return null
@@ -247,7 +338,7 @@ export const moveFileTo = action({
   args: { key: v.string(), path: v.string() },
   returns: v.null(),
   handler: async (ctx, { key, path }) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     requireFileKey(key)
     await moveFile(ctx, key, folderPrefix(requirePath(path)) + nameOf(key))
     return null
@@ -259,7 +350,7 @@ export const renameFolder = action({
   args: { path: v.string(), name: v.string() },
   returns: v.string(),
   handler: async (ctx, { path, name }) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     const from = folderPrefix(requirePath(path))
     if (from === DRIVE_ROOT) throw new ConvexError("The Drive can't be renamed")
     const to = `${parentOf(from)}${requireName(name)}/`
@@ -273,7 +364,7 @@ export const moveFolderTo = action({
   args: { path: v.string(), to: v.string() },
   returns: v.string(),
   handler: async (ctx, args) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     const from = folderPrefix(requirePath(args.path))
     if (from === DRIVE_ROOT) throw new ConvexError("The Drive can't be moved")
     const to = `${folderPrefix(requirePath(args.to))}${nameOf(from)}/`
@@ -286,7 +377,7 @@ export const removeFile = mutation({
   args: { key: v.string() },
   returns: v.null(),
   handler: async (ctx, { key }) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     requireFileKey(key)
     await s3.deleteObject(ctx, key)
     return null
@@ -298,7 +389,7 @@ export const removeFolder = mutation({
   args: { path: v.string() },
   returns: v.null(),
   handler: async (ctx, { path }) => {
-    await limit(ctx, "driveWrites")
+    await limit(ctx, "writes")
     const prefix = folderPrefix(requirePath(path))
     if (prefix === DRIVE_ROOT)
       throw new ConvexError("The Drive can't be deleted")

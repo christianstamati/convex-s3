@@ -173,6 +173,110 @@ describe("single uploads", () => {
   })
 })
 
+describe("tickets own their objects", () => {
+  async function ticket(
+    t: ReturnType<typeof setup>,
+    key: string,
+    size: number
+  ) {
+    const result = await t.mutation(api.uploads.generateUploadUrl, {
+      key,
+      size,
+    })
+    if (result.method !== "single") throw new Error("single expected")
+    return result
+  }
+
+  test("a refused upload at a taken key never deletes what's there", async () => {
+    const t = setup()
+    const a = await ticket(t, "shared.txt", 1)
+    const b = await ticket(t, "shared.txt", 2)
+    await put(a, bytes(1, 1))
+    await t.action(api.uploads.syncMetadata, { key: a.key, token: a.token })
+
+    expect((await put(b, bytes(2, 2))).status).toBe(412)
+    await expect(
+      t.action(api.uploads.syncMetadata, { key: b.key, token: b.token })
+    ).rejects.toThrow("didn't arrive")
+    await t.action(api.uploads.abortUpload, { key: b.key, token: b.token })
+    expect(s3.objects.get("shared.txt")?.data).toEqual(bytes(1, 1))
+  })
+
+  test("an abandoned ticket's expiry leaves another upload's object", async () => {
+    const t = setup()
+    await ticket(t, "name.txt", 1)
+    const b = await ticket(t, "name.txt", 1)
+    await put(b, bytes(1))
+    await t.action(api.uploads.syncMetadata, { key: b.key, token: b.token })
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(s3.objects.has("name.txt")).toBe(true)
+  })
+
+  test("a PUT URL can't be replayed after the upload", async () => {
+    const t = setup()
+    const a = await ticket(t, "once.bin", 4)
+    await put(a, bytes(4))
+    await t.action(api.uploads.syncMetadata, { key: a.key, token: a.token })
+    expect((await put(a, bytes(4, 9))).status).toBe(412)
+    expect(s3.objects.get("once.bin")?.data).toEqual(bytes(4))
+  })
+
+  test("two syncs at once record the upload once", async () => {
+    const t = setup()
+    const a = await ticket(t, "twice.txt", 1)
+    await put(a, bytes(1))
+    const results = await Promise.allSettled([
+      t.action(api.uploads.syncMetadata, { key: a.key, token: a.token }),
+      t.action(api.uploads.syncMetadata, { key: a.key, token: a.token }),
+    ])
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1)
+  })
+
+  test("the marker is signed, kept out of the record, and reserved", async () => {
+    const t = setup()
+    const a = await ticket(t, "m.txt", 1)
+    expect(Object.keys(a.headers)).toContain("x-amz-meta-upload-ticket")
+    await put(a, bytes(1))
+    const { metadata } = await t.action(api.uploads.syncMetadata, {
+      key: a.key,
+      token: a.token,
+    })
+    expect(metadata.metadata).toBeUndefined()
+    await expect(
+      t.mutation(api.uploads.generateUploadUrl, {
+        key: "x",
+        put: { metadata: { "Upload-Ticket": "forged" } },
+      })
+    ).rejects.toThrow("reserved")
+  })
+
+  test("refuses headers that can't be signed, and impossible options", async () => {
+    const t = setup()
+    await expect(
+      t.mutation(api.uploads.generateUploadUrl, {
+        key: "x",
+        put: { contentDisposition: 'attachment; filename="é.txt"' },
+      })
+    ).rejects.toThrow("printable ASCII")
+    await expect(
+      t.mutation(api.uploads.generateUploadUrl, {
+        key: "x",
+        size: 10 * MiB,
+        multipartThreshold: MiB,
+        put: { checksumSha256: "abc" },
+      })
+    ).rejects.toThrow("multipart")
+    await expect(
+      t.mutation(api.uploads.generateUploadPost, {
+        key: "x",
+        maxSize: 10,
+        put: { ifNoneMatch: true },
+      })
+    ).rejects.toThrow("can't refuse to overwrite")
+  })
+})
+
 describe("multipart uploads", () => {
   async function startMultipart(t: ReturnType<typeof setup>, size: number) {
     const ticket = await t.mutation(api.uploads.generateUploadUrl, {
@@ -410,6 +514,67 @@ describe("objects", () => {
     expect(listing.objects).toHaveLength(250)
     expect(listing.folders).toEqual(["big/sub/"])
     expect(listing.isTruncated).toBe(false)
+  })
+
+  test("keys with characters above U+FFFF stay inside their prefixes", async () => {
+    const t = setup()
+    await seed(t, ["d/\u{1F600}.txt", "d/a/\u{1F600}.png", "d/z.txt", "e/x"])
+    expect(await t.query(api.lib.listFolder, {})).toMatchObject({
+      folders: ["d/", "e/"],
+      isTruncated: false,
+    })
+    const d = await t.query(api.lib.listFolder, { prefix: "d/" })
+    expect(d.folders).toEqual(["d/a/"])
+    expect(d.objects.map((o) => o.key)).toEqual(["d/z.txt", "d/\u{1F600}.txt"])
+    const rows = await t.query(api.lib.listMetadata, {
+      prefix: "d/",
+      paginationOpts: { numItems: 10, cursor: null },
+    })
+    expect(rows.page).toHaveLength(3)
+    await t.mutation(api.lib.deletePrefix, { prefix: "d/" })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    const left = await t.query(api.lib.listMetadata, {
+      paginationOpts: { numItems: 10, cursor: null },
+    })
+    expect(left.page.map((o) => o.key)).toEqual(["e/x"])
+  })
+
+  test("listFolder pages with its cursor", async () => {
+    const t = setup()
+    const keys: string[] = []
+    for (let i = 0; i < 20; i++)
+      keys.push(`p/${String(i).padStart(2, "0")}.txt`)
+    for (let i = 0; i < 5; i++) keys.push(`p/f${i}/a`, `p/f${i}/b`)
+    await t.run(async (ctx) => {
+      for (const key of keys) {
+        await ctx.db.insert("objects", {
+          bucket: "test-bucket",
+          key,
+          size: 1,
+          lastModified: 0,
+        })
+      }
+    })
+    const seen: string[] = []
+    let cursor: string | null = null
+    for (let page = 0; page < 10; page++) {
+      const result: {
+        folders: string[]
+        objects: { key: string }[]
+        cursor: string | null
+      } = await t.query(api.lib.listFolder, { prefix: "p/", limit: 7, cursor })
+      seen.push(...result.folders, ...result.objects.map((o) => o.key))
+      cursor = result.cursor
+      if (cursor === null) break
+    }
+    const expected = [
+      ...keys.filter((k) => !k.includes("/f")),
+      ...[0, 1, 2, 3, 4].map((i) => `p/f${i}/`),
+    ]
+    expect(seen.sort()).toEqual(expected.sort())
+    await expect(
+      t.query(api.lib.listFolder, { prefix: "p/", cursor: "a" })
+    ).rejects.toThrow("another prefix")
   })
 
   test("lists the bucket itself, with folders", async () => {

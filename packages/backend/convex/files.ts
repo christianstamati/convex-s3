@@ -88,6 +88,7 @@ export const remove = mutation({
   args: { id: v.id("files") },
   returns: v.null(),
   handler: async (ctx, { id }) => {
+    await limit(ctx, "writes")
     const file = await ctx.db.get("files", id)
     if (file === null) throw new ConvexError("File not found")
     await ctx.db.delete("files", id)

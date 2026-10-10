@@ -145,6 +145,52 @@ export const run = internalAction({
       return undefined
     })
 
+    await check(
+      "a ticket at a taken key can't overwrite or delete it",
+      async () => {
+        const key = `${prefix}owned.txt`
+        await s3.store(ctx, encoder.encode("mine"), { key })
+        const ticket = await s3.generateUploadUrl(ctx, { key, size: 6 })
+        if (ticket.method !== "single") throw new Error("single expected")
+        const response = await put(
+          ticket.url,
+          ticket.headers,
+          encoder.encode("theirs")
+        )
+        expectEqual(response.status, 412, "overwrite refused")
+        await s3.abortUpload(ctx, ticket.key, ticket.token)
+        const body = await (await fetch(await s3.getUrl(ctx, key))).text()
+        expectEqual(body, "mine", "still there after the abort")
+        return `PUT ${response.status}`
+      }
+    )
+
+    await check("a PUT URL can't be replayed after sync", async () => {
+      const ticket = await s3.generateUploadUrl(ctx, {
+        prefix,
+        fileName: "replay.txt",
+        size: 4,
+      })
+      if (ticket.method !== "single") throw new Error("single expected")
+      expectEqual(
+        (await put(ticket.url, ticket.headers, encoder.encode("good"))).status,
+        200,
+        "first PUT"
+      )
+      const { metadata } = await ctx.runAction(component.uploads.syncMetadata, {
+        key: ticket.key,
+        token: ticket.token,
+      })
+      expectEqual(metadata.metadata, undefined, "marker not recorded")
+      const replay = await put(
+        ticket.url,
+        ticket.headers,
+        encoder.encode("evil")
+      )
+      expectEqual(replay.status, 412, "replay refused")
+      return `replay ${replay.status}`
+    })
+
     await check("multipart: parts, resume listing, complete", async () => {
       const size = 5 * MiB + 1234
       const data = new Uint8Array(size).map((_, i) => i % 251)

@@ -30,6 +30,14 @@ export default defineSchema({
     maxSize: v.optional(v.number()),
     partSize: v.optional(v.number()),
     put: v.optional(vPutOptions),
+    /**
+     * Signed into the object's metadata (`x-amz-meta-upload-ticket`): an
+     * object counts as this upload's only if it carries it, so cleanup never
+     * deletes, and sync never records, an object another upload put there.
+     */
+    marker: v.optional(v.string()),
+    /** Set while a sync, completion or abort runs, so only one does. */
+    claimedAt: v.optional(v.number()),
     expiresAt: v.number(),
-  }).index("key", ["key"]),
+  }).index("key_token", ["key", "token"]),
 })

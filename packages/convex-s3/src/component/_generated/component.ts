@@ -96,12 +96,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         {
+          cursor?: string | null;
           delimiter?: string;
           expiresIn?: number;
           limit?: number;
           prefix?: string;
         },
         {
+          cursor: string | null;
           folders: Array<string>;
           isTruncated: boolean;
           objects: Array<{

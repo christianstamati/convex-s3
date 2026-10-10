@@ -115,20 +115,39 @@ const key = await uploadFile(file, {
 What happens:
 
 1. `generateUploadUrl` runs `checkUpload`, builds the key
-   (`<prefix><uuid>/<clean file name>`; the browser never picks it) and
-   returns a ticket. The file's size is signed into the URL, so S3 refuses a
-   file of any other size.
+   (`<prefix><uuid>/<clean file name>`, or `checkUpload`'s `key`) and returns
+   a ticket. The browser must declare the size, which is signed into the
+   URL with the content type (`application/octet-stream` when none is
+   given), so S3 refuses a file of any other size or type. The ticket
+   refuses to overwrite an existing object (`If-None-Match: *`) unless
+   `put.ifNoneMatch` is `false`, and signs a marker into the object's
+   metadata (`x-amz-meta-upload-ticket`, reserved, not recorded).
 2. Up to 64 MB (`multipartThreshold`), the browser PUTs the file. Above it,
    the upload is multipart: 16 MB parts (`partSize`), each part URL signed
    with its exact size, four parts at a time. An interrupted upload resumes
    after a reload (the hook keeps its ticket in `localStorage` for 24 hours).
-3. `syncMetadata` or `completeMultipartUpload` HEADs the object, checks it
-   against the ticket (size, `maxSize`), records it, then runs `onUpload` in
-   a mutation. If `onUpload` throws, the object is deleted.
+3. `syncMetadata` or `completeMultipartUpload` claims the ticket (so it
+   runs once), HEADs the object, checks it carries the ticket's marker and
+   fits the ticket (size, `maxSize`), records it while ending the ticket,
+   then runs `onUpload` in a mutation. If `onUpload` throws, the object is
+   deleted.
 
-A ticket's token proves the follow-up calls come from whoever got it. Tickets
-that are never completed are cleaned up when they expire: an hour after a
-single upload's URL, 24 hours for multipart.
+A ticket's token proves the follow-up calls come from whoever got it.
+Tickets that are never completed are cleaned up when they expire: an hour
+after a single upload's URL, 24 hours for multipart. Cleanup (and
+`abortUpload`) aborts the multipart upload, or deletes the object only if it
+carries the ticket's marker: what another upload put at the same key is
+never touched. Since tickets refuse to overwrite, a PUT URL can't be
+replayed after its upload either.
+
+**The browser's prefix is only a request.** `request.prefix` counts only if
+`checkUpload` returns it as `prefix` (after checking it).
+
+**Serve uploads carefully.** Whoever uploads picks the content type
+(unless `checkUpload` sets one). Opening an untrusted `text/html` or
+`image/svg+xml` inline runs it on the bucket's origin (or your CDN's): pass
+`responseContentDisposition: "attachment; ..."` to `getUrl`, or allow only
+safe types inline, as the Drive example does.
 
 **Rate-limit tickets.** Anyone who can call `generateUploadUrl` can make
 the bucket hold up to `maxSize` per ticket until it expires, so
@@ -157,7 +176,7 @@ the component.
 | `getPublicUrl(ctx, key)` | any | The URL under `S3_PUBLIC_URL`, or null |
 | `getMetadata(ctx, key)` | any | The recorded object with a download URL, or null |
 | `listMetadata(ctx, limit, cursor, prefix)`, `pageMetadata(ctx, paginationOpts, prefix)` | any | Recorded objects by key, under a prefix |
-| `listFolder(ctx, prefix, { delimiter, limit })` | any | One level under a prefix: its objects and its folders (common prefixes), like S3's listing with a delimiter, but live. Skips past each folder with one index read. A key equal to the prefix (a folder marker such as `photos/`) isn't listed |
+| `listFolder(ctx, prefix, { delimiter, limit, cursor })` | any | One level under a prefix: its objects and its folders (common prefixes), like S3's listing with a delimiter, but live. After each folder it reads one row, and runs of objects in growing batches. Returns a `cursor` past `limit`. A key equal to the prefix (a folder marker such as `photos/`) isn't listed |
 | `deleteObject(ctx, key)`, `deleteObjects(ctx, keys)` | mutation | The rows at once, the objects in the background with retries |
 | `deletePrefix(ctx, prefix)` | mutation | Everything under a non-empty prefix, in scheduled steps |
 | `headObject(ctx, key)`, `getObject(ctx, key, { range })` | action | What S3 has now; bytes of a small object or a range |
@@ -197,5 +216,7 @@ register(t)
   the module's path (`"files"`): `internal.files` from inside that module is a
   circular type.
 - Tickets replace bare upload URLs: `{ method, key, token, url, headers }`,
-  or multipart / POST. `useUploadFile` handles all three.
+  or multipart / POST. `useUploadFile` handles all three. `generateUploadUrl`
+  takes the file's `size` (required), and tickets refuse to overwrite by
+  default.
 - Signing is SigV4 on Web Crypto, with no AWS SDK in the bundle.

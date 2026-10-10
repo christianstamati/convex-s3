@@ -88,6 +88,8 @@ export class FakeS3 {
   private readonly minPartSize: number
   private uploadCounter = 0
   passthrough: typeof fetch = globalThis.fetch
+  /** Answers matching requests with a 500, to test failures halfway. */
+  failWhen: ((request: Request) => boolean) | undefined
 
   constructor(options: FakeS3Options = {}) {
     this.config = configFromEnv(this.envFrom(options))
@@ -157,7 +159,9 @@ export class FakeS3 {
     }
     let response: Response
     try {
-      response = await this.handle(request, url, base)
+      response = this.failWhen?.(request.clone())
+        ? errorResponse(500, "InternalError", "Injected failure")
+        : await this.handle(request, url, base)
     } catch (error) {
       if (!(error instanceof Refusal)) throw error
       response = errorResponse(error.status, error.code, error.message)

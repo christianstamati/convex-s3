@@ -10,4 +10,11 @@ export default defineSchema({
     size: v.number(),
     contentType: v.optional(v.string()),
   }).index("by_key", ["key"]),
+
+  // Drive folder moves in progress, so one that stopped halfway can be run
+  // again: the keys it already moved are expected at the destination.
+  driveMoves: defineTable({
+    from: v.string(),
+    to: v.string(),
+  }).index("by_from_to", ["from", "to"]),
 })

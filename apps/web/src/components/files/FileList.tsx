@@ -27,7 +27,7 @@ export function FileList() {
       <CardHeader>
         <CardTitle>Files</CardTitle>
         <CardDescription>
-          Stored in S3; download links are presigned and last an hour.
+          Stored in S3. A download link is signed when you click, for 5 minutes.
         </CardDescription>
       </CardHeader>
       <CardContent>

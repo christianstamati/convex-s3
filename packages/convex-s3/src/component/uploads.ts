@@ -3,6 +3,12 @@
  * a form POST), then a call that checks what arrived and records it. An
  * upload row tracks each ticket until then; one left unfinished is cleaned
  * up when it expires.
+ *
+ * Every ticket signs a marker into the object's metadata, and refuses to
+ * overwrite an existing object unless asked to. Cleanup deletes, and sync
+ * records, only an object carrying the ticket's marker: what another upload
+ * put at the same key is never touched. Sync, completion and abort first
+ * claim the ticket, so each happens once.
  */
 import { ConvexError, v } from "convex/values"
 import type { S3Config } from "../shared/config"
@@ -13,11 +19,13 @@ import {
   deleteObject,
   headObject,
   listParts,
+  type ObjectInfo,
   presignPostUpload,
   presignPut,
   presignUploadPart,
   S3Error,
 } from "../shared/s3"
+import { MAX_EXPIRES_IN, sha256Hex } from "../shared/sigv4"
 import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
 import {
@@ -30,8 +38,15 @@ import {
   mutation,
   type QueryCtx,
 } from "./_generated/server"
-import { checkKey, checkPutOptions, recordObject, s3Config } from "./helpers"
 import {
+  checkKey,
+  checkPutOptions,
+  recordObject,
+  s3Config,
+  UPLOAD_MARKER,
+} from "./helpers"
+import {
+  type PutOptionsValue,
   type SyncResult,
   vPart,
   vPutOptions,
@@ -58,12 +73,26 @@ const SINGLE_GRACE_MS = 60 * 60 * 1000
 const MULTIPART_TTL_MS = 24 * 60 * 60 * 1000
 /** Part URLs signed per call. */
 const MAX_PARTS_PER_SIGN = 100
+/** A claim older than this was abandoned (its action died) and can be taken. */
+const CLAIM_TIMEOUT_MS = 2 * 60 * 1000
+
+const EXPIRED =
+  "This upload has expired or was already completed. Start it again."
 
 function checkSize(name: string, value: number | undefined) {
   if (value === undefined) return
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new ConvexError(`${name} must be a whole number of bytes`)
   }
+}
+
+/** Seconds a URL lives: the default, or the request clamped to S3's 7 days. */
+function expiresInOf(requested: number | undefined) {
+  if (requested === undefined) return DEFAULT_UPLOAD_EXPIRES_IN
+  if (!Number.isFinite(requested)) {
+    throw new ConvexError("expiresIn must be a number of seconds")
+  }
+  return Math.max(1, Math.min(MAX_EXPIRES_IN, Math.floor(requested)))
 }
 
 function megabytes(bytes: number) {
@@ -76,10 +105,37 @@ function partSizeFor(size: number, requested: number | undefined) {
   return Math.min(Math.max(wanted, needed), MAX_PART_SIZE)
 }
 
+/** A ticket's marker: not its token (which stays a secret), but a hash. */
+async function markerOf(token: string) {
+  return (await sha256Hex(`upload:${token}`)).slice(0, 32)
+}
+
+/**
+ * The options a ticket stores the object with: the marker added and, unless
+ * the caller said `ifNoneMatch: false`, no overwriting.
+ */
+function ticketPut(put: PutOptionsValue | undefined, marker: string) {
+  return {
+    ...put,
+    metadata: { ...put?.metadata, [UPLOAD_MARKER]: marker },
+    ifNoneMatch: put?.ifNoneMatch ?? true,
+  }
+}
+
+/** Whether the object at the key came from this upload. */
+function isFromUpload(info: ObjectInfo | null, upload: Doc<"uploads">) {
+  return (
+    info !== null &&
+    upload.marker !== undefined &&
+    info.metadata[UPLOAD_MARKER] === upload.marker
+  )
+}
+
 /**
  * A ticket to upload one object. With `size`, it is signed into the URLs, so
  * S3 refuses a file of any other size; above `multipartThreshold` the
- * ticket is a multipart upload.
+ * ticket is a multipart upload. It refuses to overwrite an existing object
+ * unless `put.ifNoneMatch` is false.
  */
 export const generateUploadUrl = mutation({
   args: {
@@ -107,6 +163,8 @@ export const generateUploadUrl = mutation({
     const config = s3Config()
     const now = Date.now()
     const token = crypto.randomUUID()
+    const marker = await markerOf(token)
+    const put = ticketPut(args.put, marker)
     const threshold = Math.min(
       args.multipartThreshold ?? DEFAULT_MULTIPART_THRESHOLD,
       MAX_SINGLE_SIZE
@@ -115,12 +173,18 @@ export const generateUploadUrl = mutation({
       bucket: config.bucket,
       key: args.key,
       token,
+      marker,
       size,
       maxSize,
-      put: args.put,
+      put,
     }
 
     if (size !== undefined && size > threshold) {
+      if (args.put?.checksumSha256 !== undefined) {
+        throw new ConvexError(
+          "checksumSha256 covers one PUT: it can't be checked on a multipart upload"
+        )
+      }
       const partSize = partSizeFor(size, args.partSize)
       const partCount = Math.ceil(size / partSize)
       const expiresAt = now + MULTIPART_TTL_MS
@@ -140,11 +204,11 @@ export const generateUploadUrl = mutation({
       }
     }
 
-    const expiresIn = args.expiresIn ?? DEFAULT_UPLOAD_EXPIRES_IN
+    const expiresIn = expiresInOf(args.expiresIn)
     const expiresAt = now + expiresIn * 1000 + SINGLE_GRACE_MS
     const signed = await presignPut(config, args.key, {
       size,
-      put: args.put,
+      put,
       expiresIn,
       date: new Date(now),
     })
@@ -162,7 +226,8 @@ export const generateUploadUrl = mutation({
 
 /**
  * A ticket for an HTML form upload (a presigned POST), whose policy caps the
- * size: S3 itself refuses a bigger file. Not supported by Cloudflare R2.
+ * size: S3 itself refuses a bigger file. A POST can't refuse to overwrite,
+ * so use it with keys made for the upload. Not supported by Cloudflare R2.
  */
 export const generateUploadPost = mutation({
   args: {
@@ -178,15 +243,22 @@ export const generateUploadPost = mutation({
     checkPutOptions(args.put)
     checkSize("maxSize", args.maxSize)
     checkSize("minSize", args.minSize)
+    if (args.put?.ifNoneMatch === true) {
+      throw new ConvexError(
+        "A POST upload can't refuse to overwrite: use generateUploadUrl"
+      )
+    }
     const config = s3Config()
     const now = Date.now()
     const token = crypto.randomUUID()
-    const expiresIn = args.expiresIn ?? DEFAULT_UPLOAD_EXPIRES_IN
+    const marker = await markerOf(token)
+    const put = { ...ticketPut(args.put, marker), ifNoneMatch: false }
+    const expiresIn = expiresInOf(args.expiresIn)
     const expiresAt = now + expiresIn * 1000 + SINGLE_GRACE_MS
     const signed = await presignPostUpload(config, args.key, {
       minSize: args.minSize ?? 0,
       maxSize: args.maxSize,
-      put: args.put,
+      put,
       expiresIn,
       date: new Date(now),
     })
@@ -194,9 +266,10 @@ export const generateUploadPost = mutation({
       bucket: config.bucket,
       key: args.key,
       token,
+      marker,
       method: "post",
       maxSize: args.maxSize,
-      put: args.put,
+      put,
       expiresAt,
     })
     return {
@@ -228,12 +301,21 @@ async function requireUpload(
     internal.uploads.find,
     { key, token }
   )
-  if (upload === null) {
-    throw new ConvexError(
-      "This upload has expired or was already completed. Start it again."
-    )
-  }
+  if (upload === null) throw new ConvexError(EXPIRED)
   return upload
+}
+
+/** Claims the ticket for this call, or throws if it's gone or taken. */
+async function claimUpload(
+  ctx: ActionCtx,
+  key: string,
+  token: string
+): Promise<Doc<"uploads">> {
+  return await ctx.runMutation(internal.uploads.claim, { key, token })
+}
+
+async function releaseClaim(ctx: ActionCtx, upload: Doc<"uploads">) {
+  await ctx.runMutation(internal.uploads.release, { id: upload._id })
 }
 
 /** Starts the multipart upload in S3 (or returns the one already started). */
@@ -265,10 +347,7 @@ export const createMultipartUpload = action({
     const created = await createInS3(config, key, upload.put)
     const uploadId: string = await ctx.runMutation(
       internal.uploads.setUploadId,
-      {
-        id: upload._id,
-        uploadId: created,
-      }
+      { id: upload._id, uploadId: created }
     )
     // Another call won the race: drop the upload this one started.
     if (uploadId !== created) await abortMultipartUpload(config, key, created)
@@ -353,40 +432,54 @@ export const completeMultipartUpload = action({
   args: { key: v.string(), token: v.string(), parts: v.array(vPart) },
   returns: vSyncResult,
   handler: async (ctx, { key, token, parts }): Promise<SyncResult> => {
-    const upload = await requireUpload(ctx, key, token)
-    if (
-      upload.uploadId === undefined ||
-      upload.size === undefined ||
-      upload.partSize === undefined
-    ) {
-      throw new ConvexError("This upload hasn't started")
-    }
-    const partCount = Math.ceil(upload.size / upload.partSize)
-    const numbers = new Set(parts.map((part) => part.partNumber))
-    if (parts.length !== partCount || numbers.size !== partCount) {
-      throw new ConvexError(
-        `Expected ${partCount} parts, got ${parts.length}. Resume the upload.`
-      )
-    }
-    const config = s3Config()
+    const upload = await claimUpload(ctx, key, token)
     try {
-      await completeInS3(config, key, upload.uploadId, parts, {
-        ifNoneMatch: upload.put?.ifNoneMatch,
-      })
-    } catch (error) {
-      if (error instanceof S3Error && error.status < 500) {
-        throw new ConvexError(`S3 refused the upload: ${error.code}`)
+      if (
+        upload.uploadId === undefined ||
+        upload.size === undefined ||
+        upload.partSize === undefined
+      ) {
+        throw new ConvexError("This upload hasn't started")
       }
+      const partCount = Math.ceil(upload.size / upload.partSize)
+      const numbers = new Set(parts.map((part) => part.partNumber))
+      if (parts.length !== partCount || numbers.size !== partCount) {
+        throw new ConvexError(
+          `Expected ${partCount} parts, got ${parts.length}. Resume the upload.`
+        )
+      }
+      const config = s3Config()
+      try {
+        await completeInS3(config, key, upload.uploadId, parts, {
+          ifNoneMatch: upload.put?.ifNoneMatch,
+        })
+      } catch (error) {
+        // A completion that succeeded before its caller failed: the object
+        // is there with our marker, and recording it finishes the job.
+        const done =
+          error instanceof S3Error &&
+          error.code === "NoSuchUpload" &&
+          isFromUpload(await headObject(config, key), upload)
+        if (!done) {
+          if (error instanceof S3Error && error.status < 500) {
+            throw new ConvexError(`S3 refused the upload: ${error.code}`)
+          }
+          throw error
+        }
+      }
+      return await recordUpload(ctx, config, upload)
+    } catch (error) {
+      await releaseClaim(ctx, upload)
       throw error
     }
-    return await recordUpload(ctx, config, upload)
   },
 })
 
 /**
  * Records an object after an upload: HEADs it and writes its row. With a
- * token, the object must match what that ticket allowed, or it is deleted;
- * without one (server code), any existing key is synced.
+ * token, the object must be the one that ticket uploaded, within its
+ * limits, or it is deleted; without one (server code), any existing key is
+ * synced.
  */
 export const syncMetadata = action({
   args: { key: v.string(), token: v.optional(v.string()) },
@@ -399,21 +492,27 @@ export const syncMetadata = action({
       if (info === null) throw new ConvexError(`There is no object at ${key}`)
       return await recordObject(ctx, config, info)
     }
-    const upload = await requireUpload(ctx, key, token)
-    if (upload.method === "multipart") {
-      throw new ConvexError("Complete a multipart upload instead")
+    const upload = await claimUpload(ctx, key, token)
+    try {
+      if (upload.method === "multipart") {
+        throw new ConvexError("Complete a multipart upload instead")
+      }
+      return await recordUpload(ctx, config, upload)
+    } catch (error) {
+      await releaseClaim(ctx, upload)
+      throw error
     }
-    return await recordUpload(ctx, config, upload)
   },
 })
 
+/** Checks what arrived against the claimed ticket, then records it. */
 async function recordUpload(
   ctx: ActionCtx,
   config: S3Config,
   upload: Doc<"uploads">
 ): Promise<SyncResult> {
   const info = await headObject(config, upload.key)
-  if (info === null) {
+  if (info === null || !isFromUpload(info, upload)) {
     throw new ConvexError("The upload didn't arrive. Try again.")
   }
   const problem =
@@ -427,12 +526,10 @@ async function recordUpload(
     await ctx.runMutation(internal.uploads.remove, { id: upload._id })
     throw new ConvexError(problem)
   }
-  const result = await recordObject(ctx, config, info)
-  await ctx.runMutation(internal.uploads.remove, { id: upload._id })
-  return result
+  return await recordObject(ctx, config, info, upload._id)
 }
 
-/** Gives up on an upload: aborts it in S3 and removes what arrived. */
+/** Gives up on an upload: aborts it in S3 and removes what it uploaded. */
 export const abortUpload = action({
   args: { key: v.string(), token: v.string() },
   returns: v.null(),
@@ -441,33 +538,46 @@ export const abortUpload = action({
       internal.uploads.find,
       { key, token }
     )
-    if (upload !== null) await cleanUp(ctx, upload)
+    if (upload === null) return null
+    await cleanUp(ctx, await claimUpload(ctx, key, token))
     return null
   },
 })
 
+/**
+ * Aborts a multipart upload, or deletes a single upload's object, but only
+ * if it carries this ticket's marker. Then forgets the ticket.
+ */
 async function cleanUp(ctx: ActionCtx, upload: Doc<"uploads">): Promise<void> {
   const config = s3Config()
   if (upload.method === "multipart") {
     if (upload.uploadId !== undefined) {
       await abortMultipartUpload(config, upload.key, upload.uploadId)
     }
-  } else {
-    // The key was made for this upload, so anything there came from it.
+  } else if (isFromUpload(await headObject(config, upload.key), upload)) {
     await deleteObject(config, upload.key)
   }
   await ctx.runMutation(internal.uploads.remove, { id: upload._id })
 }
 
+/** Cleans up a ticket that was never completed. */
 export const expire = internalAction({
   args: { id: v.id("uploads") },
   returns: v.null(),
   handler: async (ctx, { id }): Promise<null> => {
-    const upload: Doc<"uploads"> | null = await ctx.runQuery(
-      internal.uploads.get,
+    const upload: Doc<"uploads"> | null = await ctx.runMutation(
+      internal.uploads.claimById,
       { id }
     )
-    if (upload !== null) await cleanUp(ctx, upload)
+    if (upload === null) return null
+    if (upload.claimedAt === undefined) {
+      // Busy with a sync right now: look again once that's had its time.
+      await ctx.scheduler.runAfter(CLAIM_TIMEOUT_MS, internal.uploads.expire, {
+        id,
+      })
+      return null
+    }
+    await cleanUp(ctx, upload)
     return null
   },
 })
@@ -477,15 +587,11 @@ async function findUpload(
   key: string,
   token: string
 ): Promise<Doc<"uploads"> | null> {
-  const uploads = await ctx.db
+  const upload = await ctx.db
     .query("uploads")
-    .withIndex("key", (q) => q.eq("key", key))
-    .collect()
-  return (
-    uploads.find(
-      (upload) => upload.token === token && upload.expiresAt > Date.now()
-    ) ?? null
-  )
+    .withIndex("key_token", (q) => q.eq("key", key).eq("token", token))
+    .unique()
+  return upload !== null && upload.expiresAt > Date.now() ? upload : null
 }
 
 const vUploadDoc = v.object({
@@ -504,6 +610,8 @@ const vUploadDoc = v.object({
   maxSize: v.optional(v.number()),
   partSize: v.optional(v.number()),
   put: v.optional(vPutOptions),
+  marker: v.optional(v.string()),
+  claimedAt: v.optional(v.number()),
   expiresAt: v.number(),
 })
 
@@ -511,6 +619,60 @@ export const find = internalQuery({
   args: { key: v.string(), token: v.string() },
   returns: v.union(vUploadDoc, v.null()),
   handler: async (ctx, { key, token }) => await findUpload(ctx, key, token),
+})
+
+/** Takes the ticket for one sync, completion or abort. */
+export const claim = internalMutation({
+  args: { key: v.string(), token: v.string() },
+  returns: vUploadDoc,
+  handler: async (ctx, { key, token }) => {
+    const upload = await findUpload(ctx, key, token)
+    if (upload === null) throw new ConvexError(EXPIRED)
+    const now = Date.now()
+    if (
+      upload.claimedAt !== undefined &&
+      now - upload.claimedAt < CLAIM_TIMEOUT_MS
+    ) {
+      throw new ConvexError("This upload is already being completed")
+    }
+    await ctx.db.patch("uploads", upload._id, { claimedAt: now })
+    return { ...upload, claimedAt: now }
+  },
+})
+
+/**
+ * Claims a ticket for cleanup when it expires. Null if it's gone; without
+ * `claimedAt` if someone else holds it right now.
+ */
+export const claimById = internalMutation({
+  args: { id: v.id("uploads") },
+  returns: v.union(vUploadDoc, v.null()),
+  handler: async (ctx, { id }) => {
+    const upload = await ctx.db.get("uploads", id)
+    if (upload === null) return null
+    const now = Date.now()
+    if (
+      upload.claimedAt !== undefined &&
+      now - upload.claimedAt < CLAIM_TIMEOUT_MS
+    ) {
+      const { claimedAt: _, ...unclaimed } = upload
+      return unclaimed
+    }
+    await ctx.db.patch("uploads", id, { claimedAt: now })
+    return { ...upload, claimedAt: now }
+  },
+})
+
+/** Gives a claimed ticket back, so the call can be tried again. */
+export const release = internalMutation({
+  args: { id: v.id("uploads") },
+  returns: v.null(),
+  handler: async (ctx, { id }) => {
+    if ((await ctx.db.get("uploads", id)) !== null) {
+      await ctx.db.patch("uploads", id, { claimedAt: undefined })
+    }
+    return null
+  },
 })
 
 export const get = internalQuery({

@@ -49,7 +49,28 @@ export function newKey(prefix: string | undefined, fileName?: string) {
     : `${start}/${cleanFileName(fileName)}`
 }
 
-/** The upper bound of a prefix range on an index: every key starting with it. */
-export function prefixEnd(prefix: string) {
-  return `${prefix}￿`
+/**
+ * The smallest string after every string that starts with `prefix`: the
+ * exclusive upper bound of a prefix range, or null for the empty prefix
+ * (no bound). Convex orders strings by their UTF-8 bytes, which is code
+ * point order, so this increments the last code point (`a/` → `a0`),
+ * dropping maximal ones. `prefix + "\uffff"` would miss keys continuing
+ * with characters above U+FFFF, such as emoji.
+ */
+export function prefixEnd(prefix: string): string | null {
+  const points = Array.from(prefix)
+  while (points.length > 0) {
+    const last = points.pop()?.codePointAt(0) ?? 0
+    if (last < 0x10ffff) {
+      // Skip the surrogate range, which isn't a code point of its own.
+      const next = last + 1 === 0xd800 ? 0xe000 : last + 1
+      return points.join("") + String.fromCodePoint(next)
+    }
+  }
+  return null
+}
+
+/** The smallest string after `key`, to continue a walk past it. */
+export function keyAfter(key: string) {
+  return `${key}\u0000`
 }
