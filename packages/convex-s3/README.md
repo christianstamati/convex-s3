@@ -46,7 +46,7 @@ export default app
 | `S3_BUCKET`, `S3_REGION` | The bucket and its region (`auto` for R2) |
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | An IAM user limited to the bucket (below) |
 | `S3_SESSION_TOKEN` | Temporary credentials only |
-| `S3_ENDPOINT` | S3-compatible providers, such as `https://<account>.r2.cloudflarestorage.com` or `http://localhost:9000`. Unset: AWS |
+| `S3_ENDPOINT` | S3-compatible providers, such as `https://<account>.r2.cloudflarestorage.com` or `http://localhost:9000`. Unset: AWS. The provider must support conditional writes (`If-None-Match: *` on PUT and on completing a multipart upload): AWS S3, R2 and MinIO do |
 | `S3_FORCE_PATH_STYLE` | `true` for `<endpoint>/<bucket>/<key>` URLs. Default: `true` with an endpoint, `false` on AWS |
 | `S3_PUBLIC_URL` | Base of public URLs, such as a CloudFront distribution |
 
@@ -133,18 +133,33 @@ What happens:
    deleted.
 
 A ticket's token proves the follow-up calls come from whoever got it.
-Tickets that are never completed are cleaned up when they expire: an hour
-after a single upload's URL, 24 hours for multipart. Cleanup (and
-`abortUpload`) aborts the multipart upload, or deletes the object only if it
+`abortUpload` aborts the multipart upload and deletes the object only if it
 carries the ticket's marker: what another upload put at the same key is
 never touched. Since tickets refuse to overwrite, a PUT URL can't be
-replayed after its upload either.
+replayed while its object exists.
+
+A presigned URL can't be revoked, so a ticket outlives its use. Recorded,
+refused or aborted, it is closed but kept until its URLs have expired (an
+hour after a single upload's URL, 24 hours for multipart). Then it cleans up
+what an unfinished upload left and deletes anything a replayed URL put back
+that nothing recorded. Until then its key counts as in use:
+`isKeyInUse(ctx, key)` tells you whether a key is free to hand out.
+
+**Recording happens before `onUpload`.** If `onUpload` throws, the object is
+deleted. If the app's action dies between the two, the component has a row
+the app never heard of: reconcile with `listMetadata` if that matters.
 
 **The browser's prefix is only a request.** `request.prefix` counts only if
 `checkUpload` returns it as `prefix` (after checking it).
 
+**Prefixes are S3's, raw.** `listMetadata`, `listFolder` and `deletePrefix`
+match keys that start with the string as given: `users/1` also matches
+`users/12/…`. End folder prefixes with `/`.
+
 **Serve uploads carefully.** Whoever uploads picks the content type
-(unless `checkUpload` sets one). Opening an untrusted `text/html` or
+(unless `checkUpload` sets one), and can add `Content-Disposition`,
+`Cache-Control` or `Content-Encoding` the app didn't set (only what the app
+sets is signed). Opening an untrusted `text/html` or
 `image/svg+xml` inline runs it on the bucket's origin (or your CDN's): pass
 `responseContentDisposition: "attachment; ..."` to `getUrl`, or allow only
 safe types inline, as the Drive example does.
@@ -169,11 +184,12 @@ the component.
 | Method | Context | |
 | --- | --- | --- |
 | `generateUploadUrl(ctx, options)` | mutation | A ticket: `key` or `prefix` + `fileName`, `size`, `maxSize`, `contentType`, `cacheControl`, `contentDisposition`, `metadata`, `tagging`, `storageClass`, `serverSideEncryption`, `kmsKeyId`, `checksumSha256`, `ifNoneMatch`, `expiresIn` |
-| `generateUploadPost(ctx, options)` | mutation | A form POST whose policy caps the size (`maxSize`, `minSize`). Not on R2 |
+| `generateUploadPost(ctx, options)` | mutation | A form POST whose policy caps the size (`maxSize`, `minSize`). Not on R2. A POST can't refuse to overwrite, so its form can be replayed while the policy is valid: use fresh keys and the default 5-minute lifetime |
 | `store(ctx, blob, options)` | action | Uploads bytes from an action, in parts above `multipartThreshold` (64 MB). Returns the key |
 | `syncMetadata(ctx, key)` | action | HEADs a key and records it |
 | `getUrl(ctx, key, options)` | any | A presigned GET (15 minutes by default, 7 days at most), with `versionId` and `responseContentDisposition`, `responseContentType`, `responseCacheControl` |
 | `getPublicUrl(ctx, key)` | any | The URL under `S3_PUBLIC_URL`, or null |
+| `isKeyInUse(ctx, key)` | any | Whether a key is recorded or held by a live upload ticket: pick free keys with it |
 | `getMetadata(ctx, key)` | any | The recorded object with a download URL, or null |
 | `listMetadata(ctx, limit, cursor, prefix)`, `pageMetadata(ctx, paginationOpts, prefix)` | any | Recorded objects by key, under a prefix |
 | `listFolder(ctx, prefix, { delimiter, limit, cursor })` | any | One level under a prefix: its objects and its folders (common prefixes), like S3's listing with a delimiter, but live. After each folder it reads one row, and runs of objects in growing batches. Returns a `cursor` past `limit`. A key equal to the prefix (a folder marker such as `photos/`) isn't listed |

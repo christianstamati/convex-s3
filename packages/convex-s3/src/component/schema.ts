@@ -38,6 +38,12 @@ export default defineSchema({
     marker: v.optional(v.string()),
     /** Set while a sync, completion or abort runs, so only one does. */
     claimedAt: v.optional(v.number()),
+    /**
+     * Set once the ticket is done (recorded, refused or aborted). The row
+     * stays until `expiresAt`, when its URLs have expired: a final sweep
+     * then deletes anything a replayed URL put back that nothing recorded.
+     */
+    closedAt: v.optional(v.number()),
     expiresAt: v.number(),
   }).index("key_token", ["key", "token"]),
 })

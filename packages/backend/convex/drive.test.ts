@@ -150,6 +150,68 @@ describe("drive", () => {
     expect(await names(t, "")).toEqual({ folders: ["New"], files: [] })
   })
 
+  test("a file uploaded in parts doesn't block resuming its folder's move", async () => {
+    const { t, s3 } = setup()
+    const size = 9 * 1024 * 1024
+    const ticket = await t.mutation(api.drive.generateUploadUrl, {
+      fileName: "big.bin",
+      size,
+      prefix: "Old/",
+    })
+    if (ticket.method !== "multipart") throw new Error("multipart expected")
+    const keyToken = { key: ticket.key, token: ticket.token }
+    const { partSize, partCount } = await t.action(
+      api.drive.createMultipartUpload,
+      keyToken
+    )
+    const urls = await t.mutation(api.drive.signUploadParts, {
+      ...keyToken,
+      partNumbers: Array.from({ length: partCount }, (_, i) => i + 1),
+    })
+    const parts: { partNumber: number; etag: string }[] = []
+    for (const { partNumber, url } of urls) {
+      const length = Math.min(partSize, size - (partNumber - 1) * partSize)
+      const response = await fetch(url, {
+        method: "PUT",
+        body: new Uint8Array(length),
+      })
+      parts.push({ partNumber, etag: response.headers.get("etag") ?? "" })
+    }
+    await t.action(api.drive.completeMultipartUpload, { ...keyToken, parts })
+
+    // The copy lands, deleting the source fails: the move stops.
+    s3.failWhen = (request) =>
+      request.method === "DELETE" && request.url.endsWith("/Old/big.bin")
+    await expect(
+      t.action(api.drive.renameFolder, { path: "Old/", name: "New" })
+    ).rejects.toThrow()
+    s3.failWhen = undefined
+    // The copy's ETag differs from the multipart source's; it still resumes.
+    expect(
+      await t.action(api.drive.renameFolder, { path: "Old/", name: "New" })
+    ).toBe("New/")
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect([...s3.objects.keys()]).toEqual(["drive/New/big.bin"])
+  })
+
+  test("an upload never recorded doesn't block its name", async () => {
+    const { t } = setup()
+    // Someone takes a ticket for cv.pdf and PUTs, but never syncs.
+    const squat = await t.mutation(api.drive.generateUploadUrl, {
+      fileName: "cv.pdf",
+      size: 1,
+      prefix: "",
+    })
+    if (squat.method !== "single") throw new Error("single expected")
+    await fetch(squat.url, {
+      method: "PUT",
+      headers: squat.headers,
+      body: new Uint8Array(1),
+    })
+    // The next cv.pdf gets a numbered name instead of a refused PUT.
+    expect(await upload(t, "", "cv.pdf")).toBe("drive/cv (2).pdf")
+  })
+
   test("a move onto an existing folder is refused", async () => {
     const { t } = setup()
     await upload(t, "A/", "x.txt")

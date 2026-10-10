@@ -16,5 +16,6 @@ export default defineSchema({
   driveMoves: defineTable({
     from: v.string(),
     to: v.string(),
+    startedAt: v.number(),
   }).index("by_from_to", ["from", "to"]),
 })

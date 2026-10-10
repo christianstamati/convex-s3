@@ -9,6 +9,11 @@
  * records, only an object carrying the ticket's marker: what another upload
  * put at the same key is never touched. Sync, completion and abort first
  * claim the ticket, so each happens once.
+ *
+ * A presigned URL can't be revoked, so a ticket outlives its use: once
+ * recorded, refused or aborted it is closed, and stays until its URLs have
+ * expired. Then a final sweep deletes whatever a replayed URL put back that
+ * nothing recorded. Until then the key counts as in use (`keyInUse`).
  */
 import { ConvexError, v } from "convex/values"
 import type { S3Config } from "../shared/config"
@@ -73,8 +78,13 @@ const SINGLE_GRACE_MS = 60 * 60 * 1000
 const MULTIPART_TTL_MS = 24 * 60 * 60 * 1000
 /** Part URLs signed per call. */
 const MAX_PARTS_PER_SIGN = 100
-/** A claim older than this was abandoned (its action died) and can be taken. */
-const CLAIM_TIMEOUT_MS = 2 * 60 * 1000
+/**
+ * A claim older than this was abandoned and can be taken: longer than an
+ * action can run (10 minutes), so a slow completion never loses its claim.
+ */
+const CLAIM_TIMEOUT_MS = 11 * 60 * 1000
+/** A failed expiry tries again after this. */
+const EXPIRE_RETRY_MS = 5 * 60 * 1000
 
 const EXPIRED =
   "This upload has expired or was already completed. Start it again."
@@ -454,13 +464,10 @@ export const completeMultipartUpload = action({
           ifNoneMatch: upload.put?.ifNoneMatch,
         })
       } catch (error) {
-        // A completion that succeeded before its caller failed: the object
-        // is there with our marker, and recording it finishes the job.
-        const done =
-          error instanceof S3Error &&
-          error.code === "NoSuchUpload" &&
-          isFromUpload(await headObject(config, key), upload)
-        if (!done) {
+        // A completion that already happened (a retry after its caller
+        // failed): S3 answers NoSuchUpload, or 412 to the condition, and the
+        // object is there with our marker. Recording it finishes the job.
+        if (!isFromUpload(await headObject(config, key), upload)) {
           if (error instanceof S3Error && error.status < 500) {
             throw new ConvexError(`S3 refused the upload: ${error.code}`)
           }
@@ -523,10 +530,13 @@ async function recordUpload(
         : null
   if (problem !== null) {
     await deleteObject(config, upload.key)
-    await ctx.runMutation(internal.uploads.remove, { id: upload._id })
+    await ctx.runMutation(internal.uploads.close, { id: upload._id })
     throw new ConvexError(problem)
   }
-  return await recordObject(ctx, config, info, upload._id)
+  return await recordObject(ctx, config, info, {
+    id: upload._id,
+    claimedAt: upload.claimedAt ?? 0,
+  })
 }
 
 /** Gives up on an upload: aborts it in S3 and removes what it uploaded. */
@@ -539,28 +549,46 @@ export const abortUpload = action({
       { key, token }
     )
     if (upload === null) return null
-    await cleanUp(ctx, await claimUpload(ctx, key, token))
+    const claimed = await claimUpload(ctx, key, token)
+    try {
+      await cleanUp(ctx, claimed)
+    } catch (error) {
+      await releaseClaim(ctx, claimed)
+      throw error
+    }
+    await ctx.runMutation(internal.uploads.close, { id: claimed._id })
     return null
   },
 })
 
 /**
- * Aborts a multipart upload, or deletes a single upload's object, but only
- * if it carries this ticket's marker. Then forgets the ticket.
+ * Removes what an unfinished upload left: aborts its multipart upload, and
+ * deletes an object carrying its marker that nothing recorded (a single
+ * upload's, or a multipart one S3 completed before recording failed).
  */
 async function cleanUp(ctx: ActionCtx, upload: Doc<"uploads">): Promise<void> {
   const config = s3Config()
-  if (upload.method === "multipart") {
-    if (upload.uploadId !== undefined) {
-      await abortMultipartUpload(config, upload.key, upload.uploadId)
-    }
-  } else if (isFromUpload(await headObject(config, upload.key), upload)) {
-    await deleteObject(config, upload.key)
+  if (upload.method === "multipart" && upload.uploadId !== undefined) {
+    await abortMultipartUpload(config, upload.key, upload.uploadId)
   }
-  await ctx.runMutation(internal.uploads.remove, { id: upload._id })
+  await sweep(ctx, config, upload)
 }
 
-/** Cleans up a ticket that was never completed. */
+/** Deletes an object carrying the ticket's marker that nothing recorded. */
+async function sweep(ctx: ActionCtx, config: S3Config, upload: Doc<"uploads">) {
+  const info = await headObject(config, upload.key)
+  if (!isFromUpload(info, upload)) return
+  const recorded: boolean = await ctx.runQuery(internal.lib.isRecorded, {
+    key: upload.key,
+  })
+  if (!recorded) await deleteObject(config, upload.key)
+}
+
+/**
+ * At a ticket's expiry, when its URLs no longer work: cleans up an
+ * unfinished upload, sweeps a closed one for what a replayed URL put back,
+ * then forgets the ticket. Retries later if S3 fails.
+ */
 export const expire = internalAction({
   args: { id: v.id("uploads") },
   returns: v.null(),
@@ -577,7 +605,18 @@ export const expire = internalAction({
       })
       return null
     }
-    await cleanUp(ctx, upload)
+    try {
+      if (upload.closedAt === undefined) await cleanUp(ctx, upload)
+      else await sweep(ctx, s3Config(), upload)
+    } catch (error) {
+      console.warn("Cleaning up an expired upload failed; retrying", error)
+      await releaseClaim(ctx, upload)
+      await ctx.scheduler.runAfter(EXPIRE_RETRY_MS, internal.uploads.expire, {
+        id,
+      })
+      return null
+    }
+    await ctx.runMutation(internal.uploads.remove, { id })
     return null
   },
 })
@@ -591,7 +630,11 @@ async function findUpload(
     .query("uploads")
     .withIndex("key_token", (q) => q.eq("key", key).eq("token", token))
     .unique()
-  return upload !== null && upload.expiresAt > Date.now() ? upload : null
+  return upload !== null &&
+    upload.closedAt === undefined &&
+    upload.expiresAt > Date.now()
+    ? upload
+    : null
 }
 
 const vUploadDoc = v.object({
@@ -612,6 +655,7 @@ const vUploadDoc = v.object({
   put: v.optional(vPutOptions),
   marker: v.optional(v.string()),
   claimedAt: v.optional(v.number()),
+  closedAt: v.optional(v.number()),
   expiresAt: v.number(),
 })
 
@@ -660,6 +704,21 @@ export const claimById = internalMutation({
     }
     await ctx.db.patch("uploads", id, { claimedAt: now })
     return { ...upload, claimedAt: now }
+  },
+})
+
+/** Closes a ticket: done with, but kept until its URLs have expired. */
+export const close = internalMutation({
+  args: { id: v.id("uploads") },
+  returns: v.null(),
+  handler: async (ctx, { id }) => {
+    if ((await ctx.db.get("uploads", id)) !== null) {
+      await ctx.db.patch("uploads", id, {
+        closedAt: Date.now(),
+        claimedAt: undefined,
+      })
+    }
+    return null
   },
 })
 

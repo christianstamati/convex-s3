@@ -15,6 +15,7 @@ import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
 import {
   internalMutation,
+  internalQuery,
   type MutationCtx,
   mutation,
   query,
@@ -276,19 +277,31 @@ export const deletePrefix = mutation({
 
 /**
  * Writes what a HEAD saw. Returns whether the key was new. With
- * `finishUpload`, removes that ticket in the same transaction.
+ * `finishUpload`, closes that ticket in the same transaction, provided the
+ * caller's claim still holds.
  */
 export const upsertMetadata = internalMutation({
   args: {
     object: v.object(vStoredObject),
-    finishUpload: v.optional(v.id("uploads")),
+    finishUpload: v.optional(
+      v.object({ id: v.id("uploads"), claimedAt: v.number() })
+    ),
   },
   returns: v.boolean(),
   handler: async (ctx, { object, finishUpload }) => {
     if (finishUpload !== undefined) {
-      if ((await ctx.db.get("uploads", finishUpload)) !== null) {
-        await ctx.db.delete("uploads", finishUpload)
+      const upload = await ctx.db.get("uploads", finishUpload.id)
+      if (
+        upload === null ||
+        upload.closedAt !== undefined ||
+        upload.claimedAt !== finishUpload.claimedAt
+      ) {
+        throw new ConvexError("This upload was cancelled before it finished")
       }
+      await ctx.db.patch("uploads", upload._id, {
+        closedAt: Date.now(),
+        claimedAt: undefined,
+      })
     }
     const row = await ctx.db
       .query("objects")
@@ -302,6 +315,44 @@ export const upsertMetadata = internalMutation({
     }
     await ctx.db.replace("objects", row._id, object)
     return false
+  },
+})
+
+/** Whether the key has a recorded object. */
+export const isRecorded = internalQuery({
+  args: { key: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { key }) => {
+    const { bucket } = s3Config()
+    const row = await ctx.db
+      .query("objects")
+      .withIndex("bucket_key", (q) => q.eq("bucket", bucket).eq("key", key))
+      .first()
+    return row !== null
+  },
+})
+
+/**
+ * Whether a key is taken: it has a recorded object, or a ticket whose URLs
+ * may still put one there. Use it to pick free names; S3 may also hold
+ * objects this component doesn't know about.
+ */
+export const keyInUse = query({
+  args: { key: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { key }) => {
+    const { bucket } = s3Config()
+    const row = await ctx.db
+      .query("objects")
+      .withIndex("bucket_key", (q) => q.eq("bucket", bucket).eq("key", key))
+      .first()
+    if (row !== null) return true
+    const tickets = await ctx.db
+      .query("uploads")
+      .withIndex("key_token", (q) => q.eq("key", key))
+      .take(20)
+    const now = Date.now()
+    return tickets.some((ticket) => ticket.expiresAt > now)
   },
 })
 

@@ -46,6 +46,10 @@ export type ObjectInfo = {
   storageClass?: string | undefined
   cacheControl?: string | undefined
   contentDisposition?: string | undefined
+  contentEncoding?: string | undefined
+  contentLanguage?: string | undefined
+  serverSideEncryption?: string | undefined
+  kmsKeyId?: string | undefined
   checksumSha256?: string | undefined
   metadata: Record<string, string>
 }
@@ -318,6 +322,12 @@ function infoFrom(key: string, headers: Headers): ObjectInfo {
     storageClass: headers.get("x-amz-storage-class") ?? undefined,
     cacheControl: headers.get("cache-control") ?? undefined,
     contentDisposition: headers.get("content-disposition") ?? undefined,
+    contentEncoding: headers.get("content-encoding") ?? undefined,
+    contentLanguage: headers.get("content-language") ?? undefined,
+    serverSideEncryption:
+      headers.get("x-amz-server-side-encryption") ?? undefined,
+    kmsKeyId:
+      headers.get("x-amz-server-side-encryption-aws-kms-key-id") ?? undefined,
     checksumSha256: headers.get("x-amz-checksum-sha256") ?? undefined,
     metadata,
   }
@@ -487,14 +497,22 @@ function copySource(
   }`
 }
 
-/** The headers and metadata an object has, as options to store a copy. */
+/**
+ * The headers and metadata an object has, as options to store a copy
+ * (without an upload ticket's marker). Tags aren't part of a HEAD.
+ */
 function putOptionsOf(info: ObjectInfo): PutOptions {
+  const { "upload-ticket": _marker, ...metadata } = info.metadata
   return {
     contentType: info.contentType,
     cacheControl: info.cacheControl,
     contentDisposition: info.contentDisposition,
-    metadata: Object.keys(info.metadata).length > 0 ? info.metadata : undefined,
+    contentEncoding: info.contentEncoding,
+    contentLanguage: info.contentLanguage,
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     storageClass: info.storageClass,
+    serverSideEncryption: info.serverSideEncryption,
+    kmsKeyId: info.kmsKeyId,
   }
 }
 

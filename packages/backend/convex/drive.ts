@@ -35,6 +35,8 @@ import { s3 } from "./lib/s3"
 
 const MiB = 1024 * 1024
 const MAX_FILE_SIZE = 2048 * MiB
+/** A move record older than this is stale: it no longer allows resuming. */
+const MOVE_RESUME_MS = 60 * 60 * 1000
 /** Folders moved or renamed here hold this many objects at most. */
 const MAX_MOVE = 500
 /** Objects moved at once. */
@@ -79,9 +81,13 @@ function requireFileKey(key: string) {
   }
 }
 
-/** Whether anything is at a key, or under a folder prefix. */
+/**
+ * Whether anything is at a key, or under a folder prefix. A key counts while
+ * an upload ticket holds it (its URL could still put a file there), so new
+ * uploads are numbered rather than refused by S3.
+ */
 async function exists(ctx: ReadCtx, keyOrPrefix: string) {
-  if ((await s3.getMetadata(ctx, keyOrPrefix)) !== null) return true
+  if (await s3.isKeyInUse(ctx, keyOrPrefix)) return true
   if (!keyOrPrefix.endsWith("/")) return false
   const inside = await s3.listFolder(ctx, keyOrPrefix, { limit: 1 })
   return inside.folders.length > 0 || inside.objects.length > 0
@@ -240,10 +246,11 @@ async function listAll(ctx: ActionCtx, prefix: string) {
 /**
  * Moves every object under one prefix to another: S3 has no folders, so a
  * folder moves key by key (copy, then delete). The move is recorded while
- * it runs, so one that stopped halfway can be run again: the keys it moved
- * are then expected at the destination, and a destination key holding an
- * exact copy (same size and ETag) of its source counts as moved. Anything
- * else there is a collision, refused before anything moves.
+ * it runs, so one that stopped halfway can be run again within the hour:
+ * the keys it moved are then expected at the destination, and a key there
+ * of the same size as its source counts as copied (ETags differ between a
+ * multipart upload and its copy). Without a recent record, any key at the
+ * destination is a collision, refused before anything moves.
  */
 async function moveFolder(ctx: ActionCtx, from: string, to: string) {
   if (to === from) return
@@ -264,7 +271,7 @@ async function moveFolder(ctx: ActionCtx, from: string, to: string) {
     there.delete(destination)
     if (copy === undefined) {
       pending.push({ from: source.key, to: destination })
-    } else if (copy.size === source.size && copy.etag === source.etag) {
+    } else if (resuming && copy.size === source.size) {
       alreadyMoved.push(source.key)
     } else {
       throw new ConvexError(`"${nameOf(to)}" is already there`)
@@ -287,14 +294,17 @@ async function moveFolder(ctx: ActionCtx, from: string, to: string) {
   await ctx.runMutation(internal.drive.forgetMove, { from, to })
 }
 
+/** Whether this move was started within the hour (and can resume). */
 export const moveRecorded = internalQuery({
   args: { from: v.string(), to: v.string() },
   returns: v.boolean(),
-  handler: async (ctx, { from, to }) =>
-    (await ctx.db
+  handler: async (ctx, { from, to }) => {
+    const move = await ctx.db
       .query("driveMoves")
       .withIndex("by_from_to", (q) => q.eq("from", from).eq("to", to))
-      .first()) !== null,
+      .first()
+    return move !== null && move.startedAt > Date.now() - MOVE_RESUME_MS
+  },
 })
 
 export const recordMove = internalMutation({
@@ -305,7 +315,9 @@ export const recordMove = internalMutation({
       .query("driveMoves")
       .withIndex("by_from_to", (q) => q.eq("from", from).eq("to", to))
       .first()
-    if (existing === null) await ctx.db.insert("driveMoves", { from, to })
+    if (existing === null) {
+      await ctx.db.insert("driveMoves", { from, to, startedAt: Date.now() })
+    }
     return null
   },
 })

@@ -50,6 +50,10 @@ export const vObjectInfo = v.object({
   storageClass: v.optional(v.string()),
   cacheControl: v.optional(v.string()),
   contentDisposition: v.optional(v.string()),
+  contentEncoding: v.optional(v.string()),
+  contentLanguage: v.optional(v.string()),
+  serverSideEncryption: v.optional(v.string()),
+  kmsKeyId: v.optional(v.string()),
   checksumSha256: v.optional(v.string()),
   metadata: v.record(v.string(), v.string()),
 })

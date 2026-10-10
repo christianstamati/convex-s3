@@ -90,13 +90,13 @@ function userMetadata(metadata: Record<string, string>) {
 
 /**
  * Writes what a HEAD saw as the object's row. With `upload`, the same
- * mutation ends that ticket, so a recorded object never has a live ticket.
+ * mutation closes that ticket, if its claim still holds.
  */
 export async function recordObject(
   ctx: ActionCtx,
   config: S3Config,
   info: ObjectInfoValue,
-  upload?: Id<"uploads">
+  upload?: { id: Id<"uploads">; claimedAt: number }
 ): Promise<SyncResult> {
   const stored = {
     bucket: config.bucket,

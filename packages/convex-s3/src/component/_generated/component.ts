@@ -92,6 +92,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      keyInUse: FunctionReference<
+        "query",
+        "internal",
+        { key: string },
+        boolean,
+        Name
+      >;
       listFolder: FunctionReference<
         "query",
         "internal",
@@ -210,11 +217,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             cacheControl?: string;
             checksumSha256?: string;
             contentDisposition?: string;
+            contentEncoding?: string;
+            contentLanguage?: string;
             contentType?: string;
             etag?: string;
             key: string;
+            kmsKeyId?: string;
             lastModified: number;
             metadata: Record<string, string>;
+            serverSideEncryption?: string;
             size: number;
             storageClass?: string;
             versionId?: string;
@@ -230,11 +241,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           cacheControl?: string;
           checksumSha256?: string;
           contentDisposition?: string;
+          contentEncoding?: string;
+          contentLanguage?: string;
           contentType?: string;
           etag?: string;
           key: string;
+          kmsKeyId?: string;
           lastModified: number;
           metadata: Record<string, string>;
+          serverSideEncryption?: string;
           size: number;
           storageClass?: string;
           versionId?: string;

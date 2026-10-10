@@ -359,6 +359,15 @@ export class S3 {
     return await ctx.runQuery(this.component.lib.getUrl, { key, ...options })
   }
 
+  /**
+   * Whether a key is taken: recorded, or held by an upload ticket whose URLs
+   * may still put an object there. Check it before choosing a key, since a
+   * ticket at a taken key is refused by S3 (`If-None-Match`).
+   */
+  async isKeyInUse(ctx: RunQueryCtx, key: string): Promise<boolean> {
+    return await ctx.runQuery(this.component.lib.keyInUse, { key })
+  }
+
   /** The URL under `S3_PUBLIC_URL`, or null without one. */
   async getPublicUrl(ctx: RunQueryCtx, key: string): Promise<string | null> {
     return await ctx.runQuery(this.component.lib.getPublicUrl, { key })

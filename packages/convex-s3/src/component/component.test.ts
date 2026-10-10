@@ -233,6 +233,38 @@ describe("tickets own their objects", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1)
   })
 
+  test("a URL replayed after its object is deleted is swept at expiry", async () => {
+    const t = setup()
+    const a = await ticket(t, "gone.txt", 3)
+    await put(a, bytes(3))
+    await t.action(api.uploads.syncMetadata, { key: a.key, token: a.token })
+    await t.mutation(api.lib.deleteObject, { key: "gone.txt" })
+    // Run the background delete, not yet the ticket's expiry.
+    vi.advanceTimersByTime(1)
+    await t.finishInProgressScheduledFunctions()
+    expect(s3.objects.has("gone.txt")).toBe(false)
+
+    // The URL still works until it expires: the object comes back...
+    expect((await put(a, bytes(3, 4))).status).toBe(200)
+    // ...and the key stays in use until then, so nobody else collides.
+    expect(await t.query(api.lib.keyInUse, { key: "gone.txt" })).toBe(true)
+
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(s3.objects.has("gone.txt")).toBe(false)
+    expect(await t.query(api.lib.keyInUse, { key: "gone.txt" })).toBe(false)
+  })
+
+  test("a ticket's key is in use until it expires", async () => {
+    const t = setup()
+    expect(await t.query(api.lib.keyInUse, { key: "held.txt" })).toBe(false)
+    await ticket(t, "held.txt", 1)
+    expect(await t.query(api.lib.keyInUse, { key: "held.txt" })).toBe(true)
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(await t.query(api.lib.keyInUse, { key: "held.txt" })).toBe(false)
+  })
+
   test("the marker is signed, kept out of the record, and reserved", async () => {
     const t = setup()
     const a = await ticket(t, "m.txt", 1)
@@ -340,6 +372,60 @@ describe("multipart uploads", () => {
       contentType: "video/mp4",
     })
     expect(s3.objects.get("video.bin")?.data.length).toBe(size)
+  })
+
+  async function uploadAllParts(
+    t: ReturnType<typeof setup>,
+    keyToken: { key: string; token: string },
+    size: number,
+    partSize: number
+  ) {
+    const count = Math.ceil(size / partSize)
+    const urls = await t.mutation(api.uploads.signUploadParts, {
+      ...keyToken,
+      partNumbers: Array.from({ length: count }, (_, i) => i + 1),
+    })
+    const parts: { partNumber: number; etag: string }[] = []
+    for (const { partNumber, url } of urls) {
+      const length = Math.min(partSize, size - (partNumber - 1) * partSize)
+      const response = await fetch(url, {
+        method: "PUT",
+        body: bytes(length) as BodyInit,
+      })
+      parts.push({ partNumber, etag: response.headers.get("etag") ?? "" })
+    }
+    return parts
+  }
+
+  test("a completion S3 finished but that failed to record can be retried", async () => {
+    const t = setup()
+    const { keyToken, started } = await startMultipart(t, 6 * MiB)
+    const parts = await uploadAllParts(t, keyToken, 6 * MiB, started.partSize)
+    s3.failWhen = (request) => request.method === "HEAD"
+    await expect(
+      t.action(api.uploads.completeMultipartUpload, { ...keyToken, parts })
+    ).rejects.toThrow()
+    s3.failWhen = undefined
+    // S3 already completed it: the retry records it instead of failing.
+    const { metadata } = await t.action(api.uploads.completeMultipartUpload, {
+      ...keyToken,
+      parts,
+    })
+    expect(metadata.size).toBe(6 * MiB)
+  })
+
+  test("aborting after S3 completed but before recording removes the object", async () => {
+    const t = setup()
+    const { keyToken, started } = await startMultipart(t, 6 * MiB)
+    const parts = await uploadAllParts(t, keyToken, 6 * MiB, started.partSize)
+    s3.failWhen = (request) => request.method === "HEAD"
+    await expect(
+      t.action(api.uploads.completeMultipartUpload, { ...keyToken, parts })
+    ).rejects.toThrow()
+    s3.failWhen = undefined
+    expect(s3.objects.has("video.bin")).toBe(true)
+    await t.action(api.uploads.abortUpload, keyToken)
+    expect(s3.objects.has("video.bin")).toBe(false)
   })
 
   test("a part's URL only takes that part's exact size", async () => {
