@@ -53,6 +53,7 @@ the [package README](packages/convex-s3/README.md#the-bucket) describes.
 | `bun dev` | Backend and example app in watch mode |
 | `bun run test` | The component's tests and the example's, against `FakeS3` |
 | `bunx convex run e2e:run` | In `packages/backend`: end-to-end checks against the deployment's real bucket, under `e2e/<run>/`, deleted afterwards |
+| `bun run --cwd packages/convex-s3 test:providers` | The provider suite: the component's flows against any S3-compatible endpoint named by the `S3_*` env vars (CI runs it on MinIO, and on R2 when the repo has `R2_*` secrets) |
 | `bun run typecheck` | `tsc` (TypeScript 7) in every package |
 | `bun run check` / `check:fix` | Biome lint and format |
 | `bun run build` | Production build of the example app |

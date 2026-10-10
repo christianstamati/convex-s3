@@ -15,8 +15,9 @@
   "scripts": {
     "codegen": "cd ../backend && convex codegen --component-dir ../convex-s3/src/component",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --exclude src/providers.test.ts",
+    "test:watch": "vitest",
+    "test:providers": "vitest run --config vitest.providers.config.ts"
   },
   "dependencies": {
     "convex-helpers": "^0.1.128"

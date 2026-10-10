@@ -14,3 +14,57 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Lint, typecheck and test
         run: bun run ci
+
+  # The component against a real S3-compatible server (MinIO, path-style).
+  providers-minio:
+    runs-on: ubuntu-latest
+    env:
+      S3_BUCKET: convex-s3-test
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Start MinIO and create the bucket
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break
+            sleep 1
+          done
+          aws --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION" \
+            s3api create-bucket --bucket "$S3_BUCKET"
+      - name: Provider suite on MinIO
+        run: bun run --cwd packages/convex-s3 test:providers
+
+  # The component against Cloudflare R2, when the repo has its secrets:
+  # R2_BUCKET, R2_ENDPOINT (https://<account>.r2.cloudflarestorage.com),
+  # R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY. R2 has no POST uploads.
+  providers-r2:
+    runs-on: ubuntu-latest
+    env:
+      S3_BUCKET: ${{ secrets.R2_BUCKET }}
+      S3_REGION: auto
+      S3_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      S3_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      S3_PROVIDER_NO_POST: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Provider suite on R2
+        run: |
+          if [ -z "$S3_BUCKET" ]; then
+            echo "No R2 secrets in this repo: skipping."
+            exit 0
+          fi
+          bun run --cwd packages/convex-s3 test:providers
