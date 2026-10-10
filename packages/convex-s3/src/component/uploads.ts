@@ -83,8 +83,9 @@ const MAX_PARTS_PER_SIGN = 100
  * action can run (10 minutes), so a slow completion never loses its claim.
  */
 const CLAIM_TIMEOUT_MS = 11 * 60 * 1000
-/** A failed expiry tries again after this. */
+/** A failed expiry tries again after this, this many times (an hour). */
 const EXPIRE_RETRY_MS = 5 * 60 * 1000
+const MAX_EXPIRE_ATTEMPTS = 12
 
 const EXPIRED =
   "This upload has expired or was already completed. Start it again."
@@ -590,9 +591,9 @@ async function sweep(ctx: ActionCtx, config: S3Config, upload: Doc<"uploads">) {
  * then forgets the ticket. Retries later if S3 fails.
  */
 export const expire = internalAction({
-  args: { id: v.id("uploads") },
+  args: { id: v.id("uploads"), attempt: v.optional(v.number()) },
   returns: v.null(),
-  handler: async (ctx, { id }): Promise<null> => {
+  handler: async (ctx, { id, attempt = 0 }): Promise<null> => {
     const upload: Doc<"uploads"> | null = await ctx.runMutation(
       internal.uploads.claimById,
       { id }
@@ -602,6 +603,7 @@ export const expire = internalAction({
       // Busy with a sync right now: look again once that's had its time.
       await ctx.scheduler.runAfter(CLAIM_TIMEOUT_MS, internal.uploads.expire, {
         id,
+        attempt,
       })
       return null
     }
@@ -609,10 +611,18 @@ export const expire = internalAction({
       if (upload.closedAt === undefined) await cleanUp(ctx, upload)
       else await sweep(ctx, s3Config(), upload)
     } catch (error) {
+      if (attempt + 1 >= MAX_EXPIRE_ATTEMPTS) {
+        // S3 keeps refusing (credentials, permissions, object lock): give
+        // up on this ticket, leaving its key's object as it is.
+        console.error(`Gave up cleaning up the upload of ${upload.key}`, error)
+        await ctx.runMutation(internal.uploads.remove, { id })
+        return null
+      }
       console.warn("Cleaning up an expired upload failed; retrying", error)
       await releaseClaim(ctx, upload)
       await ctx.scheduler.runAfter(EXPIRE_RETRY_MS, internal.uploads.expire, {
         id,
+        attempt: attempt + 1,
       })
       return null
     }

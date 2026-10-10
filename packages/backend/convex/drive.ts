@@ -93,18 +93,40 @@ async function exists(ctx: ReadCtx, keyOrPrefix: string) {
   return inside.folders.length > 0 || inside.objects.length > 0
 }
 
-/** The first free `name`, `name (2)`, … in a folder. */
+/**
+ * The first free `name`, `name (2)`, … in a folder. Past 20 taken ones, a
+ * random number, so names can't be used up by holding tickets.
+ */
 async function freeKey(
   ctx: ReadCtx,
   folder: string,
   name: string,
   isFolder: boolean
 ) {
-  for (let n = 1; n <= 100; n++) {
-    const key = `${folder}${numbered(name, n, isFolder)}${isFolder ? "/" : ""}`
+  const keyFor = (n: number) =>
+    `${folder}${numbered(name, n, isFolder)}${isFolder ? "/" : ""}`
+  for (let n = 1; n <= 20; n++) {
+    if (!(await exists(ctx, keyFor(n)))) return keyFor(n)
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const key = keyFor(1000 + Math.floor(Math.random() * 9_000_000))
     if (!(await exists(ctx, key))) return key
   }
   throw new ConvexError(`Too many items named "${name}" here`)
+}
+
+/**
+ * Whether S3 has something at a key, or under a folder prefix, right now.
+ * Renames and moves check this rather than `exists`: a key a closed upload
+ * ticket still holds is free to move a file to (the copy makes the ticket's
+ * replayed URL fail).
+ */
+async function inBucket(ctx: ActionCtx, keyOrPrefix: string) {
+  if (!keyOrPrefix.endsWith("/")) {
+    return (await s3.headObject(ctx, keyOrPrefix)) !== null
+  }
+  const page = await s3.listObjects(ctx, { prefix: keyOrPrefix, limit: 1 })
+  return page.objects.length > 0
 }
 
 export const {
@@ -220,10 +242,25 @@ export const createFolder = action({
 /** Moves a file to a new key, refusing to overwrite. */
 async function moveFile(ctx: ActionCtx, key: string, destination: string) {
   if (destination === key) return
-  if (await exists(ctx, destination)) {
+  if (await inBucket(ctx, destination)) {
     throw new ConvexError(`"${nameOf(destination)}" is already there`)
   }
   await s3.moveObject(ctx, key, destination)
+}
+
+/**
+ * Whether two objects can be the same upload: a copy keeps its source's
+ * metadata, upload marker included, so different markers mean different
+ * files. Without markers on both, nothing tells them apart.
+ */
+async function sameUpload(ctx: ActionCtx, a: string, b: string) {
+  const [first, second] = await Promise.all([
+    s3.headObject(ctx, a),
+    s3.headObject(ctx, b),
+  ])
+  const markerA = first?.metadata["upload-ticket"]
+  const markerB = second?.metadata["upload-ticket"]
+  return markerA === undefined || markerB === undefined || markerA === markerB
 }
 
 /** Every object under a prefix, from S3's own listing. */
@@ -248,9 +285,11 @@ async function listAll(ctx: ActionCtx, prefix: string) {
  * folder moves key by key (copy, then delete). The move is recorded while
  * it runs, so one that stopped halfway can be run again within the hour:
  * the keys it moved are then expected at the destination, and a key there
- * of the same size as its source counts as copied (ETags differ between a
- * multipart upload and its copy). Without a recent record, any key at the
- * destination is a collision, refused before anything moves.
+ * of the same size as its source, and the same upload marker when both
+ * have one, counts as copied (ETags differ between a multipart upload and
+ * its copy). Such a copy is recorded before its source goes. Without a
+ * recent record, any key at the destination is a collision, refused before
+ * anything moves. Like any move, it moves what S3 lists, recorded or not.
  */
 async function moveFolder(ctx: ActionCtx, from: string, to: string) {
   if (to === from) return
@@ -264,15 +303,19 @@ async function moveFolder(ctx: ActionCtx, from: string, to: string) {
   const sources = await listAll(ctx, from)
   const there = new Map((await listAll(ctx, to)).map((o) => [o.key, o]))
   const pending: { from: string; to: string }[] = []
-  const alreadyMoved: string[] = []
+  const alreadyMoved: { from: string; to: string }[] = []
   for (const source of sources) {
     const destination = to + source.key.slice(from.length)
     const copy = there.get(destination)
     there.delete(destination)
     if (copy === undefined) {
       pending.push({ from: source.key, to: destination })
-    } else if (resuming && copy.size === source.size) {
-      alreadyMoved.push(source.key)
+    } else if (
+      resuming &&
+      copy.size === source.size &&
+      (await sameUpload(ctx, source.key, destination))
+    ) {
+      alreadyMoved.push({ from: source.key, to: destination })
     } else {
       throw new ConvexError(`"${nameOf(to)}" is already there`)
     }
@@ -290,7 +333,16 @@ async function moveFolder(ctx: ActionCtx, from: string, to: string) {
         .map((move) => s3.moveObject(ctx, move.from, move.to))
     )
   }
-  if (alreadyMoved.length > 0) await s3.deleteObjects(ctx, alreadyMoved)
+  for (const move of alreadyMoved) {
+    // The copy landed but may not have been recorded before the move stopped.
+    await s3.syncMetadata(ctx, move.to)
+  }
+  if (alreadyMoved.length > 0) {
+    await s3.deleteObjects(
+      ctx,
+      alreadyMoved.map((move) => move.from)
+    )
+  }
   await ctx.runMutation(internal.drive.forgetMove, { from, to })
 }
 

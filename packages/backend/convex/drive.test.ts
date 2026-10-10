@@ -212,6 +212,14 @@ describe("drive", () => {
     expect(await upload(t, "", "cv.pdf")).toBe("drive/cv (2).pdf")
   })
 
+  test("a file can be renamed away and back while its ticket lives", async () => {
+    const { t } = setup()
+    const key = await upload(t, "", "a.txt")
+    await t.action(api.drive.renameFile, { key, name: "b.txt" })
+    await t.action(api.drive.renameFile, { key: "drive/b.txt", name: "a.txt" })
+    expect(await names(t, "")).toEqual({ folders: [], files: ["a.txt"] })
+  })
+
   test("a move onto an existing folder is refused", async () => {
     const { t } = setup()
     await upload(t, "A/", "x.txt")
