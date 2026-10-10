@@ -33,9 +33,14 @@ jobs:
           AWS_ACCESS_KEY_ID: minioadmin
           AWS_SECRET_ACCESS_KEY: minioadmin
         run: |
+          # Docker Hub no longer serves minio/minio: MinIO's own registry,
+          # then Chainguard's build of it.
+          for image in quay.io/minio/minio:latest cgr.dev/chainguard/minio:latest; do
+            if docker pull "$image"; then break; fi
+          done
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            "$image" server /data
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:9000/minio/health/live && break
             sleep 1
