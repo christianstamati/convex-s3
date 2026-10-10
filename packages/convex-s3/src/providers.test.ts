@@ -5,8 +5,8 @@
  * written under `providers/<run>/` and deleted at the end.
  *
  * CI runs it against MinIO, and against Cloudflare R2 when the repo has R2
- * secrets. Set S3_PROVIDER_NO_POST=1 for providers without POST uploads
- * (R2).
+ * secrets. Set S3_PROVIDER_NO_POST=1 and S3_PROVIDER_NO_TAGGING=1 for
+ * providers without POST uploads or object tags (R2).
  */
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test"
@@ -20,6 +20,7 @@ import { sha256 } from "./shared/sigv4"
 const modules = import.meta.glob(["./component/**/*.ts", "!./**/*.test.ts"])
 const enabled = Boolean(process.env.S3_BUCKET)
 const noPost = process.env.S3_PROVIDER_NO_POST === "1"
+const noTagging = process.env.S3_PROVIDER_NO_TAGGING === "1"
 const MiB = 1024 * 1024
 const prefix = `providers/${Date.now()}/`
 
@@ -233,7 +234,7 @@ describe.skipIf(!enabled)("provider", () => {
     expect(metadata).toMatchObject({ size: 8, contentType: "image/png" })
   })
 
-  test("listing with folders, copy, move, tags", async () => {
+  test("listing with folders, copy, move", async () => {
     const t = setup()
     await stored(t, `${prefix}folder/a.txt`, "a")
     await stored(t, `${prefix}src.txt`, "copy me")
@@ -257,9 +258,13 @@ describe.skipIf(!enabled)("provider", () => {
     expect(
       await t.action(api.objects.headObject, { key: `${prefix}copy.txt` })
     ).toBeNull()
+  })
 
+  test.skipIf(noTagging)("tags", async () => {
+    const t = setup()
+    await stored(t, `${prefix}tagged.txt`, "t")
     await t.action(api.objects.putObjectTagging, {
-      key: `${prefix}src.txt`,
+      key: `${prefix}tagged.txt`,
       tags: { stage: "tested" },
     })
   })
