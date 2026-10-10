@@ -30,6 +30,14 @@ import type { DataModel } from "./dataModel.js";
 type Env = {
   readonly CONVEX_CLOUD_URL: string;
   readonly CONVEX_SITE_URL: string;
+  readonly S3_ACCESS_KEY_ID: string;
+  readonly S3_BUCKET: string;
+  readonly S3_ENDPOINT: string | undefined;
+  readonly S3_FORCE_PATH_STYLE: string | undefined;
+  readonly S3_PUBLIC_URL: string | undefined;
+  readonly S3_REGION: string;
+  readonly S3_SECRET_ACCESS_KEY: string;
+  readonly S3_SESSION_TOKEN: string | undefined;
 };
 
 /**

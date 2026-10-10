@@ -23,7 +23,9 @@
         "@tanstack/react-start": "^1.168.60",
         "@workspace/backend": "workspace:*",
         "@workspace/ui": "workspace:*",
+        "cn": "^0.4.0",
         "convex": "^1.46.0",
+        "convex-s3": "workspace:*",
         "react": "^19.3.0",
         "react-dom": "^19.3.0",
       },
@@ -49,6 +51,7 @@
       "dependencies": {
         "convex": "^1.46.0",
         "convex-helpers": "^0.1.128",
+        "convex-s3": "workspace:*",
       },
       "devDependencies": {
         "@edge-runtime/vm": "^5.0.0",
@@ -58,6 +61,31 @@
         "vite": "^8.3.4",
         "vitest": "^5.0.3",
       },
+    },
+    "packages/convex-s3": {
+      "name": "convex-s3",
+      "version": "0.0.0",
+      "dependencies": {
+        "convex-helpers": "^0.1.128",
+      },
+      "devDependencies": {
+        "@edge-runtime/vm": "^5.0.0",
+        "@types/node": "^24.19.1",
+        "@types/react": "^19.3.0",
+        "convex": "^1.46.0",
+        "convex-test": "^0.0.60",
+        "react": "^19.3.0",
+        "typescript": "^7.0.2",
+        "vite": "^8.3.4",
+        "vitest": "^5.0.3",
+      },
+      "peerDependencies": {
+        "convex": "^1.46.0",
+        "react": "^19",
+      },
+      "optionalPeers": [
+        "react",
+      ],
     },
     "packages/ui": {
       "name": "@workspace/ui",
@@ -658,6 +686,8 @@
     "convex": ["convex@1.46.0", "", { "dependencies": { "esbuild": "0.27.0", "prettier": "^3.0.0", "ws": "8.21.0" }, "peerDependencies": { "@auth0/auth0-react": "^2.0.1", "@clerk/clerk-react": "^4.12.8 || ^5.0.0", "@clerk/react": "^6.4.3", "react": "^18.0.0 || ^19.0.0-0 || ^19.0.0" }, "optionalPeers": ["@auth0/auth0-react", "@clerk/clerk-react", "@clerk/react", "react"], "bin": { "convex": "bin/main.js" } }, "sha512-dhBwDQTZDOhi5SUGAX17EWNehCdNq6/UFrSL0eLZuGfMkdsQbCVWVRZCzbZ5CF+/pgvoGxtApbEoTSipqL4JTw=="],
 
     "convex-helpers": ["convex-helpers@0.1.128", "", { "peerDependencies": { "@standard-schema/spec": "^1.0.0", "convex": "^1.46.0", "hono": "^4.0.5", "react": "^17.0.2 || ^18.0.0 || ^19.0.0", "typescript": "^5.5 || ^6.0.0 || ^7.0.0", "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["@standard-schema/spec", "hono", "react", "typescript", "zod"], "bin": { "convex-helpers": "bin.cjs" } }, "sha512-5n7uKsJrYnnybvuSAWgDQ9d5Avqk4CzFsJ22SXow4tHmVxSUH6qiJCeomWWxcLSfN9t9jpKIXNJiGJrjddS4ng=="],
+
+    "convex-s3": ["convex-s3@workspace:packages/convex-s3"],
 
     "convex-test": ["convex-test@0.0.60", "", { "peerDependencies": { "convex": "^1.43.0" } }, "sha512-qCAFx+CO6bmpXNc9s1jZvw8NJPS4yM074ib87PUY675FsiaRRW4ALotEB+RbVCYDRMYxh623KMnYZBlrMJIv1Q=="],
 

@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "convex": "^1.46.0",
-    "convex-helpers": "^0.1.128"
+    "convex-helpers": "^0.1.128",
+    "convex-s3": "workspace:*"
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",

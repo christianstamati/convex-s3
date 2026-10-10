@@ -8,7 +8,8 @@
  * @module
  */
 
-import type * as tasks from "../tasks.js";
+import type * as e2e from "../e2e.js";
+import type * as files from "../files.js";
 
 import type {
   ApiFromModules,
@@ -17,7 +18,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  tasks: typeof tasks;
+  e2e: typeof e2e;
+  files: typeof files;
 }>;
 
 /**
@@ -46,4 +48,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  s3: import("convex-s3/_generated/component.js").ComponentApi<"s3">;
+};

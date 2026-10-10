@@ -1,0 +1,44 @@
+{
+  "name": "convex-s3",
+  "version": "0.0.0",
+  "description": "A Convex component for S3-compatible object storage, with the R2 component's API.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/client/index.ts",
+    "./convex.config": "./src/component/convex.config.ts",
+    "./convex.config.js": "./src/component/convex.config.ts",
+    "./react": "./src/react/index.ts",
+    "./testing": "./src/testing/index.ts",
+    "./_generated/component.js": "./src/component/_generated/component.ts"
+  },
+  "scripts": {
+    "codegen": "cd ../backend && convex codegen --component-dir ../convex-s3/src/component",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "convex-helpers": "^0.1.128"
+  },
+  "peerDependencies": {
+    "convex": "^1.46.0",
+    "react": "^19"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "@types/node": "^24.19.1",
+    "@types/react": "^19.3.0",
+    "convex": "^1.46.0",
+    "convex-test": "^0.0.60",
+    "react": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
+  }
+}
