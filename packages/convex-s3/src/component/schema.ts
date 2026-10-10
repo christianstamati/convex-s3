@@ -1,6 +1,6 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
-import { vPutOptions, vStoredObject } from "./validators"
+import { vPutOptions, vStoredObject } from "./validators.js"
 
 export default defineSchema({
   /**

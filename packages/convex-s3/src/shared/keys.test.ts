@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { keyAfter, keyProblem, prefixEnd } from "./keys"
+import { keyAfter, keyProblem, prefixEnd } from "./keys.js"
 
 describe("keys", () => {
   test("prefixEnd is the next string in code point order", () => {

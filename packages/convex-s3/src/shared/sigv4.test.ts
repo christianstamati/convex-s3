@@ -6,7 +6,7 @@ import {
   sha256Hex,
   signRequest,
   uriEncode,
-} from "./sigv4"
+} from "./sigv4.js"
 
 // The worked examples from AWS's SigV4 documentation for S3:
 // https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html

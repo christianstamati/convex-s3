@@ -1,4 +1,4 @@
-import { uriEncode } from "./sigv4"
+import { uriEncode } from "./sigv4.js"
 
 export type S3Config = {
   bucket: string

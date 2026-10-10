@@ -7,7 +7,7 @@
 import { useConvex } from "convex/react"
 import { type FunctionReference, getFunctionName } from "convex/server"
 import { useCallback } from "react"
-import type { ObjectMetadata, UploadTicket } from "../component/validators"
+import type { ObjectMetadata, UploadTicket } from "../component/validators.js"
 
 type KeyToken = { key: string; token: string }
 

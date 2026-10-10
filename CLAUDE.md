@@ -2,12 +2,12 @@
 
 Bun + Turborepo monorepo. See README.md for commands, and `packages/convex-s3/README.md` for the component's API.
 
-- `packages/convex-s3`: the component, published later as `convex-s3` (exports TypeScript sources for now). `src/component` is the Convex component (`convex.config.ts` declares its env vars; `uploads.ts` the upload flow, `lib.ts` metadata, URLs and deletes, `objects.ts` actions), `src/shared` plain TypeScript with no Convex imports (`sigv4.ts` signing on Web Crypto, `s3.ts` one function per S3 operation, `config.ts`, `keys.ts`, `xml.ts`, `md5.ts`), `src/client` the app-side `S3` class and `clientApi()`, `src/react` `useUploadFile`, `src/testing` `FakeS3` and `register`.
+- `packages/convex-s3`: the component, published to npm as `@cstack-dev/convex-s3` (always import it by that name). `bun run build` compiles `src` to `dist`, which its `exports` point at; Turbo builds it before anything that depends on it, and `bun dev` rebuilds it on change. Its README is the user docs and `llms.txt` the guide for coding agents: keep both in step with the API. `src/component` is the Convex component (`convex.config.ts` declares its env vars; `uploads.ts` the upload flow, `lib.ts` metadata, URLs and deletes, `objects.ts` actions), `src/shared` plain TypeScript with no Convex imports (`sigv4.ts` signing on Web Crypto, `s3.ts` one function per S3 operation, `config.ts`, `keys.ts`, `xml.ts`, `md5.ts`), `src/client` the app-side `S3` class and `clientApi()`, `src/react` `useUploadFile`, `src/testing` `FakeS3` and `register`.
 - `packages/backend`: the examples' Convex functions, each a module using the shared `S3` instance (`convex/lib/s3.ts`): `files.ts` (Uploads) and `drive.ts` (Drive: folders are prefixes under `drive/`, path rules in `convex/lib/drivePaths.ts`, pure and tested). `convex/e2e.ts` runs end-to-end checks against the real bucket (`bunx convex run e2e:run`). Imported by the web app as `@workspace/backend/api`.
 - `apps/web`: the examples' web app, TanStack Start (React 19), file routes in `src/routes`. Each example is a route under `/examples/<slug>` and an entry in `src/lib/examples.ts`, which the home page and `/examples` list; add both for a new one.
 - `packages/ui`: shadcn/ui components (Base UI primitives, Tailwind CSS 4), imported as `@workspace/ui/components/<name>`
 
-Before finishing a change, run `bun run check:fix`, `bun run typecheck` and `bun run test`, and fix every error.
+Before finishing a change, run `bun run check:fix`, `bun run typecheck` and `bun run test`, and fix every error. Changes to the component that touch S3's behaviour also run `bun run --cwd packages/convex-s3 test:providers` against a real bucket (CI runs it on MinIO).
 
 ## Backend (Convex)
 

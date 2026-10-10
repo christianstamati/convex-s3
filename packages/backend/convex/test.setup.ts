@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 import rateLimiter from "@convex-dev/rate-limiter/test"
-import { FakeS3, register } from "convex-s3/testing"
+import { FakeS3, register } from "@cstack-dev/convex-s3/testing"
 import { convexTest } from "convex-test"
 import { afterEach, vi } from "vitest"
 import schema from "./schema"

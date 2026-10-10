@@ -8,26 +8,26 @@ import {
 } from "convex/server"
 import { ConvexError, v } from "convex/values"
 import { paginator } from "convex-helpers/server/pagination"
-import { publicUrl } from "../shared/config"
-import { keyAfter, prefixEnd } from "../shared/keys"
-import { presignGet } from "../shared/s3"
-import { internal } from "./_generated/api"
-import type { Doc } from "./_generated/dataModel"
+import { publicUrl } from "../shared/config.js"
+import { keyAfter, prefixEnd } from "../shared/keys.js"
+import { presignGet } from "../shared/s3.js"
+import { internal } from "./_generated/api.js"
+import type { Doc } from "./_generated/dataModel.js"
 import {
   internalMutation,
   internalQuery,
   type MutationCtx,
   mutation,
   query,
-} from "./_generated/server"
+} from "./_generated/server.js"
 import {
   checkKey,
   DEFAULT_GET_EXPIRES_IN,
   s3Config,
   toMetadata,
-} from "./helpers"
-import schema from "./schema"
-import { vGetUrlOptions, vObjectMetadata, vStoredObject } from "./validators"
+} from "./helpers.js"
+import schema from "./schema.js"
+import { vGetUrlOptions, vObjectMetadata, vStoredObject } from "./validators.js"
 
 /** Rows deleted per mutation when clearing a prefix. */
 const DELETE_BATCH = 500

@@ -1,0 +1,302 @@
+# @cstack-dev/convex-s3
+
+> A Convex component for S3-compatible storage (AWS S3, Cloudflare R2, MinIO). Browsers upload straight to the bucket with presigned tickets; Convex signs requests inside the component, enforces the app's checks and records what arrived. API modeled on the Convex R2 component. Import it as `@cstack-dev/convex-s3`, never `convex-s3`.
+
+This file is an integration guide for coding agents. Follow the steps in order. Human-oriented docs: https://github.com/christianstamati/convex-s3/tree/main/packages/convex-s3#readme
+
+## Entry points
+
+- `@cstack-dev/convex-s3`: `S3` class (server), types (`UploadTicket`, `ObjectMetadata`, `PutOptions`, `UploadPolicy`, `UploadRequest`, `GetUrlOptions`, `ClientApiOptions`), validators (`vObjectMetadata`, `vUploadTicket`), helpers (`newKey`, `normalizePrefix`, `cleanFileName`).
+- `@cstack-dev/convex-s3/convex.config`: the component, for `app.use()` in `convex/convex.config.ts`.
+- `@cstack-dev/convex-s3/react`: `useUploadFile(api.<module>)`, and `uploadFile(client, api, file, options)` outside React.
+- `@cstack-dev/convex-s3/testing`: `FakeS3` (in-memory S3) and `register(t)` for convex-test.
+
+## Step 0: check the project
+
+1. `convex` in package.json must be >= 1.46.0 (components with their own env vars). Upgrade if older.
+2. Find the app's auth (Convex Auth `getAuthUserId`, Clerk `ctx.auth.getUserIdentity()`, ...). The checks in step 4 must use it. If the app has no auth, say so to the user and rate-limit uploads (see Rules).
+3. Find the Convex deployment's region if possible (Dashboard > Settings, or the URL, e.g. `*.eu-west-1.convex.cloud`) and use the same AWS region for the bucket.
+4. Ask the user which provider they want if unclear. Default: AWS S3 with the AWS CLI. Check `aws sts get-caller-identity` works; if not, ask the user to sign in (`aws login` or `aws configure sso`). Never ask for or handle their AWS password.
+
+## Step 1: create the bucket and its IAM user (AWS CLI)
+
+Pick a globally unique bucket name, e.g. `<app>-files-<account id>`. Use the user's dev origin (usually `http://localhost:3000` or `http://localhost:5173`) and their production origin in CORS.
+
+```sh
+BUCKET=<app>-files-<account id>
+REGION=<region>
+aws s3api create-bucket --bucket $BUCKET --region $REGION --create-bucket-configuration LocationConstraint=$REGION
+# In us-east-1, omit --create-bucket-configuration.
+aws s3api put-public-access-block --bucket $BUCKET --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-cors --bucket $BUCKET --cors-configuration '{"CORSRules":[{"AllowedOrigins":["http://localhost:3000"],"AllowedMethods":["PUT","POST","GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["ETag"],"MaxAgeSeconds":3600}]}'
+aws s3api put-bucket-lifecycle-configuration --bucket $BUCKET --lifecycle-configuration '{"Rules":[{"ID":"abort-incomplete-multipart","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+aws iam create-user --user-name $BUCKET-convex
+aws iam put-user-policy --user-name $BUCKET-convex --policy-name bucket --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts","s3:PutObjectTagging","s3:GetObjectTagging"],"Resource":"arn:aws:s3:::'$BUCKET'/*"},{"Effect":"Allow","Action":["s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":"arn:aws:s3:::'$BUCKET'"}]}'
+```
+
+- CORS must allow headers `*` and expose `ETag` (multipart uploads read part ETags in the browser).
+- Keep Block Public Access on. For public files, put CloudFront in front (origin access control) and set `S3_PUBLIC_URL` later.
+- Create the access key in step 3, piping it straight into Convex. Never print the secret.
+
+Other providers: Cloudflare R2 (`S3_REGION=auto`, `S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com`; no POST uploads, no object tags; CORS in the R2 dashboard; the user creates an R2 API token with Object Read & Write on the bucket). MinIO (`S3_ENDPOINT=http://localhost:9000`, path-style by default). Any provider must support conditional writes (`If-None-Match: *`).
+
+## Step 2: install and register the component
+
+```sh
+npm install @cstack-dev/convex-s3
+```
+
+`convex/convex.config.ts` (merge into the existing file; keep other components):
+
+```ts
+import { defineApp } from "convex/server"
+import { v } from "convex/values"
+import s3 from "@cstack-dev/convex-s3/convex.config"
+
+const app = defineApp({
+  env: {
+    S3_BUCKET: v.string(),
+    S3_REGION: v.string(),
+    S3_ACCESS_KEY_ID: v.string(),
+    S3_SECRET_ACCESS_KEY: v.string(),
+    S3_ENDPOINT: v.optional(v.string()),
+    S3_PUBLIC_URL: v.optional(v.string()),
+  },
+})
+
+app.use(s3, {
+  env: {
+    S3_BUCKET: app.env.S3_BUCKET,
+    S3_REGION: app.env.S3_REGION,
+    S3_ACCESS_KEY_ID: app.env.S3_ACCESS_KEY_ID,
+    S3_SECRET_ACCESS_KEY: app.env.S3_SECRET_ACCESS_KEY,
+    S3_ENDPOINT: app.env.S3_ENDPOINT,
+    S3_PUBLIC_URL: app.env.S3_PUBLIC_URL,
+  },
+})
+
+export default app
+```
+
+If the app already calls `defineApp({ env: { ... } })`, add these keys to it. Optional extras the component also accepts: `S3_SESSION_TOKEN`, `S3_FORCE_PATH_STYLE`.
+
+## Step 3: set the env vars on the deployment
+
+Required env vars must exist before `convex dev` can push. Set them without printing secrets: pipe them over stdin in .env format.
+
+```sh
+read -r KEY_ID SECRET < <(aws iam create-access-key --user-name $BUCKET-convex --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text | tr -d '\r')
+printf "S3_BUCKET='%s'\nS3_REGION='%s'\nS3_ACCESS_KEY_ID='%s'\nS3_SECRET_ACCESS_KEY='%s'\n" "$BUCKET" "$REGION" "$KEY_ID" "$SECRET" | npx convex env set --force
+unset KEY_ID SECRET
+```
+
+- On Windows, CLIs print CRLF: the `tr -d '\r'` matters (the component trims values too, but strip anyway).
+- Run it in the directory with the Convex project (where `convex/` and `.env.local` are). Production: add `--prod`, or set them in the dashboard.
+- If the user prefers, they can run `npx convex env set S3_SECRET_ACCESS_KEY` themselves (it prompts).
+
+## Step 4: the storage module
+
+Create `convex/files.ts` (name it after what the app stores; `callbacks` must be this module's path). Adapt the checks to the app's auth and rules:
+
+```ts
+import { S3 } from "@cstack-dev/convex-s3"
+import { ConvexError, v } from "convex/values"
+import { components } from "./_generated/api"
+import type { DataModel } from "./_generated/dataModel"
+import { mutation, query } from "./_generated/server"
+import { getAuthUserId } from "@convex-dev/auth/server" // use the app's auth
+
+export const s3 = new S3(components.s3)
+
+const MAX_SIZE = 100 * 1024 * 1024
+
+export const {
+  generateUploadUrl,
+  syncMetadata,
+  createMultipartUpload,
+  signUploadParts,
+  listUploadedParts,
+  completeMultipartUpload,
+  abortUpload,
+  onSyncMetadata,
+} = s3.clientApi<DataModel>({
+  checkUpload: async (ctx, _bucket, request) => {
+    const userId = await getAuthUserId(ctx)
+    if (userId === null) throw new ConvexError("Sign in to upload")
+    if (request.size > MAX_SIZE) throw new ConvexError("Files can be 100 MB at most")
+    return { prefix: `users/${userId}/`, maxSize: MAX_SIZE }
+  },
+  onUpload: async (ctx, _bucket, key, metadata) => {
+    const userId = await getAuthUserId(ctx)
+    if (userId === null) throw new ConvexError("Sign in to upload")
+    await ctx.db.insert("files", {
+      owner: userId,
+      key,
+      name: key.split("/").pop() ?? key,
+      size: metadata.size,
+      contentType: metadata.contentType,
+    })
+  },
+  callbacks: "files",
+})
+
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx)
+    if (userId === null) return []
+    return await ctx.db
+      .query("files")
+      .withIndex("by_owner", (q) => q.eq("owner", userId))
+      .order("desc")
+      .take(100)
+  },
+})
+
+export const downloadUrl = mutation({
+  args: { id: v.id("files") },
+  handler: async (ctx, { id }) => {
+    const userId = await getAuthUserId(ctx)
+    const file = await ctx.db.get(id)
+    if (file === null || file.owner !== userId) throw new ConvexError("File not found")
+    return await s3.getUrl(ctx, file.key, {
+      expiresIn: 5 * 60,
+      responseContentDisposition: `attachment; filename="${file.name.replace(/["\\]/g, "_")}"`,
+    })
+  },
+})
+
+export const remove = mutation({
+  args: { id: v.id("files") },
+  handler: async (ctx, { id }) => {
+    const userId = await getAuthUserId(ctx)
+    const file = await ctx.db.get(id)
+    if (file === null || file.owner !== userId) throw new ConvexError("File not found")
+    await ctx.db.delete(id)
+    await s3.deleteObject(ctx, file.key)
+  },
+})
+```
+
+Add the app table to `convex/schema.ts`:
+
+```ts
+files: defineTable({
+  owner: v.id("users"),
+  key: v.string(),
+  name: v.string(),
+  size: v.number(),
+  contentType: v.optional(v.string()),
+}).index("by_owner", ["owner"]),
+```
+
+Notes:
+- Export every function `clientApi()` returns that the UI needs. `useUploadFile` needs `generateUploadUrl` and `syncMetadata`, plus the five multipart functions for files above 64 MB. `onSyncMetadata` must be exported when `onUpload` or `onSyncMetadata` is used.
+- `clientApi()` can also return `getMetadata`, `listMetadata` and `deleteObject`; each needs its check (`checkReadKey`, `checkReadBucket`, `checkDelete`) or it refuses to run. Most apps use their own table instead, as above.
+- `checkUpload` may return `{ prefix, key, maxSize, contentType, put, multipartThreshold, partSize }`. The browser's `request.prefix` counts only if returned as `prefix`.
+
+## Step 5: the upload UI (React)
+
+```tsx
+import { useUploadFile } from "@cstack-dev/convex-s3/react"
+import { useMutation, useQuery } from "convex/react"
+import { useState } from "react"
+import { api } from "../convex/_generated/api"
+
+export function Files() {
+  const uploadFile = useUploadFile(api.files)
+  const files = useQuery(api.files.list) ?? []
+  const downloadUrl = useMutation(api.files.downloadUrl)
+  const remove = useMutation(api.files.remove)
+  const [progress, setProgress] = useState<number | null>(null)
+
+  return (
+    <div>
+      <input
+        type="file"
+        onChange={async (event) => {
+          const file = event.target.files?.[0]
+          if (!file) return
+          setProgress(0)
+          try {
+            await uploadFile(file, { onProgress: ({ fraction }) => setProgress(fraction) })
+          } finally {
+            setProgress(null)
+            event.target.value = ""
+          }
+        }}
+      />
+      {progress !== null && <progress value={progress} />}
+      <ul>
+        {files.map((file) => (
+          <li key={file._id}>
+            {file.name}
+            <button onClick={async () => window.location.assign(await downloadUrl({ id: file._id }))}>Download</button>
+            <button onClick={() => remove({ id: file._id })}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+```
+
+`uploadFile(file, { onProgress, signal, concurrency, resume })` returns the key. Pass an `AbortController`'s `signal` to cancel. The app must be inside `ConvexProvider` (or `ConvexAuthProvider`).
+
+## Step 6: verify
+
+1. `npx convex dev --once` pushes without errors (an error about missing env vars means step 3 didn't run on this deployment).
+2. Run the app, upload a small file and one over 64 MB if possible, download it, delete it.
+3. Optional tests: see Testing below.
+
+## Rules and pitfalls
+
+- Import from `@cstack-dev/convex-s3` (and its `/react`, `/convex.config`, `/testing` entry points). There is no package named `convex-s3`.
+- Never put AWS credentials in code, function arguments, logs or chat. They live only in the deployment's env vars.
+- Don't sign URLs in list queries: a subscribed query keeps its result, so URLs expire on screen. Sign them in a mutation when clicked (`downloadUrl` above), or use public URLs (`S3_PUBLIC_URL`, `s3.getPublicUrl(ctx, key)`).
+- Serve untrusted uploads as attachments (`responseContentDisposition: "attachment; ..."`). Never open user-uploaded HTML or SVG inline.
+- `callbacks` is a string: the module's path (`"files"`, `"storage/files"`), not `internal.files` (a circular type).
+- `generateUploadUrl` requires `size`; `useUploadFile` sends it.
+- Tickets refuse to overwrite (`If-None-Match: *`). To replace an object at a fixed key, return `put: { ifNoneMatch: false }` from `checkUpload`. Use `s3.isKeyInUse(ctx, key)` before picking a key yourself.
+- Methods take `ctx` first: `s3.getUrl(ctx, key)`, `s3.store(ctx, blob, options)`, `s3.deleteObject(ctx, key)`.
+- Network S3 calls (`store`, `syncMetadata`, `headObject`, `getObject`, `listObjects`, `copyObject`, `moveObject`) run in actions. `getUrl`, `getMetadata`, `listMetadata`, `listFolder`, `isKeyInUse` work anywhere; `deleteObject`, `deleteObjects`, `deletePrefix` and `generateUploadUrl` need a mutation or action.
+- Without auth, anyone can upload. Rate-limit `checkUpload` (e.g. `@convex-dev/rate-limiter`) and keep `maxSize` small.
+- Prefixes are raw: `users/1` matches `users/12/`. End folder prefixes with `/`.
+
+## Server API (S3 class)
+
+- `generateUploadUrl(ctx, { key | prefix + fileName, size, maxSize, contentType, ...putOptions, multipartThreshold, partSize, expiresIn })` -> ticket
+- `generateUploadPost(ctx, { key | prefix + fileName, maxSize, minSize, contentType })` -> POST ticket (not on R2)
+- `store(ctx, blob | ArrayBuffer | Uint8Array, { key | prefix + fileName, contentType, ... })` -> key (action; multipart above 64 MB)
+- `syncMetadata(ctx, key)` -> `{ metadata, isNew }` (action)
+- `getUrl(ctx, key, { expiresIn, versionId, responseContentDisposition, responseContentType, responseCacheControl })` -> URL
+- `getPublicUrl(ctx, key)` -> URL or null; `isKeyInUse(ctx, key)` -> boolean
+- `getMetadata(ctx, key)`, `listMetadata(ctx, limit, cursor, prefix)`, `pageMetadata(ctx, paginationOpts, prefix)`
+- `listFolder(ctx, prefix, { delimiter, limit, cursor })` -> `{ folders, objects, isTruncated, cursor }` (live, one level)
+- `deleteObject(ctx, key)`, `deleteObjects(ctx, keys)`, `deletePrefix(ctx, prefix)`
+- Actions: `headObject(ctx, key)`, `getObject(ctx, key, { range })`, `listObjects(ctx, { prefix, delimiter, cursor, limit })`, `copyObject(ctx, from, to, put?)`, `moveObject(ctx, from, to, put?)`, `putObjectTagging(ctx, key, tags)`
+
+Put options: `contentType`, `cacheControl`, `contentDisposition`, `contentEncoding`, `contentLanguage`, `metadata` (printable ASCII; `upload-ticket` is reserved), `tagging`, `storageClass`, `serverSideEncryption`, `kmsKeyId`, `checksumSha256` (single uploads only), `ifNoneMatch` (default true).
+
+## Testing
+
+```ts
+// convex/test.setup.ts
+import { FakeS3, register } from "@cstack-dev/convex-s3/testing"
+import { convexTest } from "convex-test"
+import { vi } from "vitest"
+import schema from "./schema"
+
+export const modules = import.meta.glob("./**/*.ts")
+
+export function setup() {
+  const s3 = new FakeS3()
+  for (const [name, value] of Object.entries(s3.env())) vi.stubEnv(name, value)
+  vi.stubGlobal("fetch", s3.fetch)
+  const t = convexTest(schema, modules)
+  register(t)
+  return { t, s3 }
+}
+```
+
+`vitest.config.ts` needs `test: { environment: "edge-runtime", server: { deps: { inline: ["convex-test", "@cstack-dev/convex-s3"] } } }`. In a test, a browser upload is: `const ticket = await t.mutation(api.files.generateUploadUrl, { fileName, size, contentType })`, then `await fetch(ticket.url, { method: "PUT", headers: ticket.headers, body })`, then `await t.action(api.files.syncMetadata, { key: ticket.key, token: ticket.token })`.

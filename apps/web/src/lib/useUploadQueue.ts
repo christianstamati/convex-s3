@@ -1,5 +1,5 @@
+import { type UploadApi, useUploadFile } from "@cstack-dev/convex-s3/react"
 import { toast } from "@workspace/ui/components/sonner"
-import { type UploadApi, useUploadFile } from "convex-s3/react"
 import { useState } from "react"
 import { errorMessage } from "@/lib/errors"
 

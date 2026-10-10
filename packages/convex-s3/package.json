@@ -1,23 +1,78 @@
 {
-  "name": "convex-s3",
-  "version": "0.0.0",
-  "description": "A Convex component for S3-compatible object storage, with the R2 component's API.",
-  "private": true,
+  "name": "@cstack-dev/convex-s3",
+  "version": "0.1.0",
+  "description": "A Convex component for S3-compatible storage (AWS S3, Cloudflare R2, MinIO): browser uploads with multipart and resume, presigned and public URLs, prefixes and folders, copies and deletes, with the R2 component's API.",
+  "license": "MIT",
+  "author": "Christian Stamati",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/christianstamati/convex-s3.git",
+    "directory": "packages/convex-s3"
+  },
+  "homepage": "https://github.com/christianstamati/convex-s3/tree/main/packages/convex-s3#readme",
+  "bugs": {
+    "url": "https://github.com/christianstamati/convex-s3/issues"
+  },
+  "keywords": [
+    "convex",
+    "convex-component",
+    "component",
+    "s3",
+    "aws-s3",
+    "r2",
+    "minio",
+    "file-upload",
+    "multipart-upload",
+    "presigned-url",
+    "storage"
+  ],
   "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "llms.txt",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
-    ".": "./src/client/index.ts",
-    "./convex.config": "./src/component/convex.config.ts",
-    "./convex.config.js": "./src/component/convex.config.ts",
-    "./react": "./src/react/index.ts",
-    "./testing": "./src/testing/index.ts",
-    "./_generated/component.js": "./src/component/_generated/component.ts"
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./convex.config": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
     "codegen": "cd ../backend && convex codegen --component-dir ../convex-s3/src/component",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude src/providers.test.ts",
     "test:watch": "vitest",
-    "test:providers": "vitest run --config vitest.providers.config.ts"
+    "test:providers": "vitest run --config vitest.providers.config.ts",
+    "prepack": "bun run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "convex-helpers": "^0.1.128"

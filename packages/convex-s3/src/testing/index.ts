@@ -1,12 +1,15 @@
 /// <reference types="vite/client" />
 import type { GenericSchema, SchemaDefinition } from "convex/server"
-import schema from "../component/schema"
+import schema from "../component/schema.js"
 
-export { type FakeObject, FakeS3, type FakeS3Options } from "./fakeS3"
+export { type FakeObject, FakeS3, type FakeS3Options } from "./fakeS3.js"
 
+// Sources in this repo, built files from npm.
 const modules = import.meta.glob([
   "../component/**/*.ts",
-  "!../component/**/*.test.ts",
+  "../component/**/*.js",
+  "!../component/**/*.test.*",
+  "!../component/**/*.d.ts",
 ])
 
 /**

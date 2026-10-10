@@ -3,8 +3,8 @@
  * operation, signed with ./sigv4. Presigning needs no network and runs
  * anywhere; everything else runs in actions.
  */
-import { bucketUrl, credentialsOf, objectUrl, type S3Config } from "./config"
-import { md5 } from "./md5"
+import { bucketUrl, credentialsOf, objectUrl, type S3Config } from "./config.js"
+import { md5 } from "./md5.js"
 import {
   base64,
   EMPTY_SHA256,
@@ -13,8 +13,8 @@ import {
   sha256Hex,
   signRequest,
   uriEncode,
-} from "./sigv4"
-import { blocks, encodeXml, text, texts } from "./xml"
+} from "./sigv4.js"
+import { blocks, encodeXml, text, texts } from "./xml.js"
 
 /** What an object is stored with. */
 export type PutOptions = {

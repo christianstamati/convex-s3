@@ -1,0 +1,7 @@
+# convex-s3 (repository)
+
+> The source of the npm package @cstack-dev/convex-s3, a Convex component for S3-compatible storage (AWS S3, Cloudflare R2, MinIO). Import it as `@cstack-dev/convex-s3`.
+
+- [Integration guide for coding agents](packages/convex-s3/llms.txt): install, bucket and IAM setup with the AWS CLI, the code to write, rules and pitfalls. Also shipped in the package: node_modules/@cstack-dev/convex-s3/llms.txt
+- [Package README](packages/convex-s3/README.md): the user documentation and API reference.
+- [Examples](packages/backend/convex): `files.ts` (uploads recorded in an app table) and `drive.ts` (a Google Drive clone where folders are S3 prefixes).

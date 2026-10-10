@@ -11,11 +11,11 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test"
 import { afterAll, describe, expect, test } from "vitest"
-import { api } from "./component/_generated/api"
-import schema from "./component/schema"
-import { configFromEnv } from "./shared/config"
-import { copyObject, headObject } from "./shared/s3"
-import { sha256 } from "./shared/sigv4"
+import { api } from "./component/_generated/api.js"
+import schema from "./component/schema.js"
+import { configFromEnv } from "./shared/config.js"
+import { copyObject, headObject } from "./shared/s3.js"
+import { sha256 } from "./shared/sigv4.js"
 
 const modules = import.meta.glob(["./component/**/*.ts", "!./**/*.test.ts"])
 const enabled = Boolean(process.env.S3_BUCKET)

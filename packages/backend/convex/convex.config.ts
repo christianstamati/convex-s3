@@ -1,7 +1,7 @@
 import rateLimiter from "@convex-dev/rate-limiter/convex.config.js"
+import s3 from "@cstack-dev/convex-s3/convex.config"
 import { defineApp } from "convex/server"
 import { v } from "convex/values"
-import s3 from "convex-s3/convex.config"
 
 // Deployment env vars, validated on every push. Set them with
 // `bunx convex env set` in packages/backend (see README.md).

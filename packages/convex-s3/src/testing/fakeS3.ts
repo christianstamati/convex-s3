@@ -10,8 +10,8 @@ import {
   configFromEnv,
   type S3Config,
   type S3Env,
-} from "../shared/config"
-import { md5 } from "../shared/md5"
+} from "../shared/config.js"
+import { md5 } from "../shared/md5.js"
 import {
   base64,
   postPolicySignature,
@@ -19,8 +19,8 @@ import {
   sha256Hex,
   signature,
   UNSIGNED_PAYLOAD,
-} from "../shared/sigv4"
-import { blocks, encodeXml, text } from "../shared/xml"
+} from "../shared/sigv4.js"
+import { blocks, encodeXml, text } from "../shared/xml.js"
 
 export type FakeObject = {
   data: Uint8Array

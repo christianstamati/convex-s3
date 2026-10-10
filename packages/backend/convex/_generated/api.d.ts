@@ -59,6 +59,6 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  s3: import("convex-s3/_generated/component.js").ComponentApi<"s3">;
+  s3: import("@cstack-dev/convex-s3/_generated/component.js").ComponentApi<"s3">;
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };

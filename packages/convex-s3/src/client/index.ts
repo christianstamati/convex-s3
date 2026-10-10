@@ -1,7 +1,7 @@
 /**
  * The app's side of the component: `new S3(components.s3)` for server code,
  * and `s3.clientApi()` for the functions browsers call (with `useUploadFile`
- * from `convex-s3/react`). Names follow the R2 component's.
+ * from `@cstack-dev/convex-s3/react`). Names follow the R2 component's.
  */
 import {
   actionGeneric,
@@ -22,7 +22,7 @@ import {
   queryGeneric,
 } from "convex/server"
 import { type Infer, v } from "convex/values"
-import type { ComponentApi } from "../component/_generated/component"
+import type { ComponentApi } from "../component/_generated/component.js"
 import {
   type ObjectInfoValue,
   type ObjectMetadata,
@@ -32,10 +32,10 @@ import {
   vObjectMetadata,
   vPart,
   vUploadTicket,
-} from "../component/validators"
-import { newKey, normalizePrefix } from "../shared/keys"
+} from "../component/validators.js"
+import { newKey, normalizePrefix } from "../shared/keys.js"
 
-export { cleanFileName, newKey, normalizePrefix } from "../shared/keys"
+export { cleanFileName, newKey, normalizePrefix } from "../shared/keys.js"
 export type {
   ObjectInfoValue as ObjectInfo,
   ObjectMetadata,

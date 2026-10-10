@@ -16,7 +16,7 @@
  * nothing recorded. Until then the key counts as in use (`keyInUse`).
  */
 import { ConvexError, v } from "convex/values"
-import type { S3Config } from "../shared/config"
+import type { S3Config } from "../shared/config.js"
 import {
   abortMultipartUpload,
   completeMultipartUpload as completeInS3,
@@ -29,10 +29,10 @@ import {
   presignPut,
   presignUploadPart,
   S3Error,
-} from "../shared/s3"
-import { MAX_EXPIRES_IN, sha256Hex } from "../shared/sigv4"
-import { internal } from "./_generated/api"
-import type { Doc } from "./_generated/dataModel"
+} from "../shared/s3.js"
+import { MAX_EXPIRES_IN, sha256Hex } from "../shared/sigv4.js"
+import { internal } from "./_generated/api.js"
+import type { Doc } from "./_generated/dataModel.js"
 import {
   type ActionCtx,
   action,
@@ -42,14 +42,14 @@ import {
   type MutationCtx,
   mutation,
   type QueryCtx,
-} from "./_generated/server"
+} from "./_generated/server.js"
 import {
   checkKey,
   checkPutOptions,
   recordObject,
   s3Config,
   UPLOAD_MARKER,
-} from "./helpers"
+} from "./helpers.js"
 import {
   type PutOptionsValue,
   type SyncResult,
@@ -57,7 +57,7 @@ import {
   vPutOptions,
   vSyncResult,
   vUploadTicket,
-} from "./validators"
+} from "./validators.js"
 
 const MiB = 1024 * 1024
 const GiB = 1024 * MiB

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { FakeS3 } from "../testing/fakeS3"
-import { copyObject, headObject } from "./s3"
+import { FakeS3 } from "../testing/fakeS3.js"
+import { copyObject, headObject } from "./s3.js"
 
 let s3: FakeS3
 

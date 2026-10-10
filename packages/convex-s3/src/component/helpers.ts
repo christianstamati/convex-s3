@@ -1,16 +1,16 @@
 import { ConvexError } from "convex/values"
-import { configFromEnv, publicUrl, type S3Config } from "../shared/config"
-import { keyProblem } from "../shared/keys"
-import { presignGet } from "../shared/s3"
-import { internal } from "./_generated/api"
-import type { Doc, Id } from "./_generated/dataModel"
-import { type ActionCtx, env } from "./_generated/server"
+import { configFromEnv, publicUrl, type S3Config } from "../shared/config.js"
+import { keyProblem } from "../shared/keys.js"
+import { presignGet } from "../shared/s3.js"
+import { internal } from "./_generated/api.js"
+import type { Doc, Id } from "./_generated/dataModel.js"
+import { type ActionCtx, env } from "./_generated/server.js"
 import type {
   ObjectInfoValue,
   ObjectMetadata,
   PutOptionsValue,
   SyncResult,
-} from "./validators"
+} from "./validators.js"
 
 /**
  * The user metadata name of an upload ticket's marker

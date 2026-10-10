@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { FakeS3 } from "../testing/fakeS3"
-import { api } from "./_generated/api"
-import schema from "./schema"
+import { FakeS3 } from "../testing/fakeS3.js"
+import { api } from "./_generated/api.js"
+import schema from "./schema.js"
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"])
 const MiB = 1024 * 1024

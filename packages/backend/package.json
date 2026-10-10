@@ -23,9 +23,9 @@
   },
   "dependencies": {
     "@convex-dev/rate-limiter": "^0.4.2",
+    "@cstack-dev/convex-s3": "workspace:*",
     "convex": "^1.46.0",
-    "convex-helpers": "^0.1.128",
-    "convex-s3": "workspace:*"
+    "convex-helpers": "^0.1.128"
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",

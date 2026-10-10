@@ -11,17 +11,17 @@ import {
   headObject as headInS3,
   listObjects as listInS3,
   putObjectTagging as tagInS3,
-} from "../shared/s3"
-import { internal } from "./_generated/api"
-import { type ActionCtx, action, internalAction } from "./_generated/server"
-import { checkKey, checkPutOptions, recordObject, s3Config } from "./helpers"
+} from "../shared/s3.js"
+import { internal } from "./_generated/api.js"
+import { type ActionCtx, action, internalAction } from "./_generated/server.js"
+import { checkKey, checkPutOptions, recordObject, s3Config } from "./helpers.js"
 import {
   type PutOptionsValue,
   type SyncResult,
   vObjectInfo,
   vPutOptions,
   vSyncResult,
-} from "./validators"
+} from "./validators.js"
 
 /**
  * Background deletes retry this many times, backing off 2^n seconds (about
