@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "bunx",
+      "runtimeArgs": ["turbo", "dev", "--ui=stream"],
+      "port": 3000
+    }
+  ]
+}

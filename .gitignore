@@ -1,0 +1,24 @@
+# dependencies
+node_modules
+
+# env files (examples are committed)
+.env*
+!.env.example
+
+# build output
+dist
+.output
+.vercel
+.nitro
+.tanstack
+.vinxi
+coverage
+
+# local Convex deployment data
+.convex
+
+# tooling
+.turbo
+*.tsbuildinfo
+.DS_Store
+*.local

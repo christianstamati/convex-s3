@@ -1,0 +1,17 @@
+{
+  /* Describes the environment Convex functions run in. Used by `convex dev`,
+   * `convex deploy` and `bun run typecheck` to typecheck functions. */
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    /* Required by Convex */
+    "target": "ESNext",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*"],
+  "exclude": ["./_generated"]
+}
