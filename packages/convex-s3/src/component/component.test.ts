@@ -348,6 +348,70 @@ describe("objects", () => {
     expect(second.isDone).toBe(true)
   })
 
+  test("lists one folder level from the recorded objects", async () => {
+    const t = setup()
+    await seed(t, [
+      "d/a.txt",
+      "d/b/",
+      "d/b/c.txt",
+      "d/b/e/f.txt",
+      "d/empty/",
+      "d/z/1",
+      "e/x",
+    ])
+    const top = await t.query(api.lib.listFolder, {})
+    expect(top).toMatchObject({ folders: ["d/", "e/"], objects: [] })
+
+    const d = await t.query(api.lib.listFolder, { prefix: "d/" })
+    expect(d.folders).toEqual(["d/b/", "d/empty/", "d/z/"])
+    expect(d.objects.map((o) => o.key)).toEqual(["d/a.txt"])
+
+    // The folder's own marker isn't listed; an empty folder is empty.
+    const b = await t.query(api.lib.listFolder, { prefix: "d/b/" })
+    expect(b.folders).toEqual(["d/b/e/"])
+    expect(b.objects.map((o) => o.key)).toEqual(["d/b/c.txt"])
+    expect(
+      await t.query(api.lib.listFolder, { prefix: "d/empty/" })
+    ).toMatchObject({ folders: [], objects: [] })
+
+    // In key order: d/a.txt, then the folder d/b/, then the limit.
+    const limited = await t.query(api.lib.listFolder, {
+      prefix: "d/",
+      limit: 2,
+    })
+    expect(limited.folders).toEqual(["d/b/"])
+    expect(limited.objects.map((o) => o.key)).toEqual(["d/a.txt"])
+    expect(limited.isTruncated).toBe(true)
+  })
+
+  test("walks large folders in batches", async () => {
+    const t = setup()
+    const keys = Array.from(
+      { length: 250 },
+      (_, i) => `big/${String(i).padStart(3, "0")}.txt`
+    )
+    await t.run(async (ctx) => {
+      for (const key of keys) {
+        await ctx.db.insert("objects", {
+          bucket: "test-bucket",
+          key,
+          size: 1,
+          lastModified: 0,
+        })
+      }
+      await ctx.db.insert("objects", {
+        bucket: "test-bucket",
+        key: "big/sub/x",
+        size: 1,
+        lastModified: 0,
+      })
+    })
+    const listing = await t.query(api.lib.listFolder, { prefix: "big/" })
+    expect(listing.objects).toHaveLength(250)
+    expect(listing.folders).toEqual(["big/sub/"])
+    expect(listing.isTruncated).toBe(false)
+  })
+
   test("lists the bucket itself, with folders", async () => {
     const t = setup()
     await seed(t, ["p/1/a", "p/2/a", "p/top"])

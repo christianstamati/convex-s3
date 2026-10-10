@@ -9,6 +9,15 @@ export function AppHeader() {
         <Link to="/" className="font-heading font-semibold">
           {site.name}
         </Link>
+        <nav className="flex items-center gap-4 text-sm">
+          <Link
+            to="/examples"
+            className="text-muted-foreground hover:text-foreground"
+            activeProps={{ className: "text-foreground" }}
+          >
+            Examples
+          </Link>
+        </nav>
       </div>
     </header>
   )

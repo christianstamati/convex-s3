@@ -8,8 +8,11 @@
  * @module
  */
 
+import type * as drive from "../drive.js";
 import type * as e2e from "../e2e.js";
 import type * as files from "../files.js";
+import type * as lib_drivePaths from "../lib/drivePaths.js";
+import type * as lib_s3 from "../lib/s3.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +21,11 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  drive: typeof drive;
   e2e: typeof e2e;
   files: typeof files;
+  "lib/drivePaths": typeof lib_drivePaths;
+  "lib/s3": typeof lib_s3;
 }>;
 
 /**

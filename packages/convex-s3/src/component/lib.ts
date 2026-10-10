@@ -12,6 +12,7 @@ import { publicUrl } from "../shared/config"
 import { prefixEnd } from "../shared/keys"
 import { presignGet } from "../shared/s3"
 import { internal } from "./_generated/api"
+import type { Doc } from "./_generated/dataModel"
 import {
   internalMutation,
   type MutationCtx,
@@ -113,6 +114,83 @@ export const listMetadata = query({
       page: await Promise.all(
         result.page.map((row) => toMetadata(config, row, { expiresIn }))
       ),
+    }
+  },
+})
+
+/** Rows read per index query while walking a folder. */
+const FOLDER_BATCH = 100
+
+/**
+ * One level of the bucket under `prefix`, like S3's listing with a
+ * delimiter: the objects directly in it and the folders (common prefixes)
+ * below it. Live, since it reads the recorded objects. A folder's own
+ * marker (a key equal to `prefix`, such as `photos/`) isn't listed.
+ */
+export const listFolder = query({
+  args: {
+    prefix: v.optional(v.string()),
+    delimiter: v.optional(v.string()),
+    /** Folders and objects together, 1,000 at most (the default). */
+    limit: v.optional(v.number()),
+    expiresIn: v.optional(v.number()),
+  },
+  returns: v.object({
+    folders: v.array(v.string()),
+    objects: v.array(vObjectMetadata),
+    isTruncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const config = s3Config()
+    const prefix = args.prefix ?? ""
+    const delimiter = args.delimiter ?? "/"
+    const limit = Math.max(1, Math.min(args.limit ?? 1000, 1000))
+    const end = prefixEnd(prefix)
+    const folders: string[] = []
+    const rows: Doc<"objects">[] = []
+    // Walk the index in key order. On reaching a folder, skip past every key
+    // in it with one new range, so a folder costs one read, not one per key.
+    let after: string | null = null
+    let isTruncated = false
+    walk: for (;;) {
+      const batch: Doc<"objects">[] = await ctx.db
+        .query("objects")
+        .withIndex("bucket_key", (q) => {
+          const inBucket = q.eq("bucket", config.bucket)
+          return after === null
+            ? inBucket.gte("key", prefix).lt("key", end)
+            : inBucket.gt("key", after).lt("key", end)
+        })
+        .take(FOLDER_BATCH)
+      for (const row of batch) {
+        if (folders.length + rows.length >= limit) {
+          isTruncated = true
+          break walk
+        }
+        const rest = row.key.slice(prefix.length)
+        const cut = delimiter === "" ? -1 : rest.indexOf(delimiter)
+        if (rest === "") {
+          after = row.key
+        } else if (cut === -1) {
+          rows.push(row)
+          after = row.key
+        } else {
+          const folder = prefix + rest.slice(0, cut + delimiter.length)
+          folders.push(folder)
+          after = prefixEnd(folder)
+          continue walk
+        }
+      }
+      if (batch.length < FOLDER_BATCH) break
+    }
+    return {
+      folders,
+      objects: await Promise.all(
+        rows.map((row) =>
+          toMetadata(config, row, { expiresIn: args.expiresIn })
+        )
+      ),
+      isTruncated,
     }
   },
 })

@@ -2,12 +2,9 @@
 // convex-s3 component. Anyone can upload here (the example has no users);
 // a real app checks the caller in each callback.
 import { ConvexError, v } from "convex/values"
-import { S3 } from "convex-s3"
-import { components } from "./_generated/api"
 import type { DataModel } from "./_generated/dataModel"
 import { mutation, query } from "./_generated/server"
-
-export const s3 = new S3(components.s3)
+import { s3 } from "./lib/s3"
 
 const MiB = 1024 * 1024
 export const MAX_FILE_SIZE = 2048 * MiB

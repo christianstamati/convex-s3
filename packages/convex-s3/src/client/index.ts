@@ -348,6 +348,26 @@ export class S3 {
     })
   }
 
+  /**
+   * One level under `prefix`: its objects and its folders (common prefixes),
+   * like S3's listing with a delimiter, but live (it reads the recorded
+   * objects). The folder's own marker object isn't listed.
+   */
+  async listFolder(
+    ctx: RunQueryCtx,
+    prefix = "",
+    options: { delimiter?: string; limit?: number; expiresIn?: number } = {}
+  ): Promise<{
+    folders: string[]
+    objects: ObjectMetadata[]
+    isTruncated: boolean
+  }> {
+    return await ctx.runQuery(this.component.lib.listFolder, {
+      prefix,
+      ...options,
+    })
+  }
+
   /** Deletes the row now and the object in the background, with retries. */
   async deleteObject(ctx: RunMutationCtx, key: string) {
     await ctx.runMutation(this.component.lib.deleteObject, { key })

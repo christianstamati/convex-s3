@@ -11,8 +11,8 @@ Browsers upload straight to the bucket; Convex signs and records.
 ```
 packages/convex-s3   the component: src/component (Convex functions), src/client
                      (the S3 class), src/react (useUploadFile), src/testing (FakeS3)
-packages/backend     an example Convex app using it, and its end-to-end checks
-apps/web             the example's web app: uploads with progress, list, delete
+packages/backend     the examples' Convex functions, and end-to-end checks
+apps/web             the examples' web app: the home page lists them
 packages/ui          shadcn/ui components for the example
 ```
 
@@ -23,9 +23,19 @@ bun install
 bun dev
 ```
 
-`bun dev` runs `convex dev` and Vite together; the example is on
-http://localhost:3000. The backend needs a bucket: set the component's env vars
-on the Convex deployment, in `packages/backend`:
+`bun dev` runs `convex dev` and Vite together; the examples are on
+http://localhost:3000:
+
+- **Drive** (`/examples/drive`): a Google Drive clone where folders are S3
+  prefixes. Folder listings use `listFolder`, a new folder is a zero-byte
+  marker object, uploads keep their names (numbered when taken), renaming or
+  moving a folder moves every key under its prefix, and deleting one is
+  `deletePrefix`. Drop files or whole folder trees on it.
+- **Uploads** (`/examples/uploads`): single and multipart uploads with
+  progress, cancel and resume, recorded in an app table by `onUpload`.
+
+The backend needs a bucket: set the component's env vars on the Convex
+deployment, in `packages/backend`:
 
 ```bash
 bunx convex env set S3_BUCKET my-bucket

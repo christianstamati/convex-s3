@@ -10,43 +10,63 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as FilesRouteImport } from './routes/files'
+import { Route as ExamplesIndexRouteImport } from './routes/examples/index'
+import { Route as ExamplesDriveRouteImport } from './routes/examples/drive'
+import { Route as ExamplesUploadsRouteImport } from './routes/examples/uploads'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const FilesRoute = FilesRouteImport.update({
-  id: '/files',
-  path: '/files',
+const ExamplesIndexRoute = ExamplesIndexRouteImport.update({
+  id: '/examples/',
+  path: '/examples/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExamplesDriveRoute = ExamplesDriveRouteImport.update({
+  id: '/examples/drive',
+  path: '/examples/drive',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExamplesUploadsRoute = ExamplesUploadsRouteImport.update({
+  id: '/examples/uploads',
+  path: '/examples/uploads',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/files': typeof FilesRoute
+  '/examples/drive': typeof ExamplesDriveRoute
+  '/examples/uploads': typeof ExamplesUploadsRoute
+  '/examples/': typeof ExamplesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/files': typeof FilesRoute
+  '/examples/drive': typeof ExamplesDriveRoute
+  '/examples/uploads': typeof ExamplesUploadsRoute
+  '/examples': typeof ExamplesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/files': typeof FilesRoute
+  '/examples/drive': typeof ExamplesDriveRoute
+  '/examples/uploads': typeof ExamplesUploadsRoute
+  '/examples/': typeof ExamplesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/files'
+  fullPaths: '/' | '/examples/drive' | '/examples/uploads' | '/examples/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/files'
-  id: '__root__' | '/' | '/files'
+  to: '/' | '/examples/drive' | '/examples/uploads' | '/examples'
+  id: '__root__' | '/' | '/examples/drive' | '/examples/uploads' | '/examples/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  FilesRoute: typeof FilesRoute
+  ExamplesDriveRoute: typeof ExamplesDriveRoute
+  ExamplesUploadsRoute: typeof ExamplesUploadsRoute
+  ExamplesIndexRoute: typeof ExamplesIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,11 +78,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/files': {
-      id: '/files'
-      path: '/files'
-      fullPath: '/files'
-      preLoaderRoute: typeof FilesRouteImport
+    '/examples/': {
+      id: '/examples/'
+      path: '/examples'
+      fullPath: '/examples/'
+      preLoaderRoute: typeof ExamplesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/examples/drive': {
+      id: '/examples/drive'
+      path: '/examples/drive'
+      fullPath: '/examples/drive'
+      preLoaderRoute: typeof ExamplesDriveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/examples/uploads': {
+      id: '/examples/uploads'
+      path: '/examples/uploads'
+      fullPath: '/examples/uploads'
+      preLoaderRoute: typeof ExamplesUploadsRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -70,7 +104,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  FilesRoute: FilesRoute,
+  ExamplesDriveRoute: ExamplesDriveRoute,
+  ExamplesUploadsRoute: ExamplesUploadsRoute,
+  ExamplesIndexRoute: ExamplesIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -92,6 +92,34 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      listFolder: FunctionReference<
+        "query",
+        "internal",
+        {
+          delimiter?: string;
+          expiresIn?: number;
+          limit?: number;
+          prefix?: string;
+        },
+        {
+          folders: Array<string>;
+          isTruncated: boolean;
+          objects: Array<{
+            bucket: string;
+            checksumSha256?: string;
+            contentType?: string;
+            etag?: string;
+            key: string;
+            lastModified: number;
+            metadata?: Record<string, string>;
+            publicUrl: string | null;
+            size: number;
+            url: string;
+            versionId?: string;
+          }>;
+        },
+        Name
+      >;
       listMetadata: FunctionReference<
         "query",
         "internal",

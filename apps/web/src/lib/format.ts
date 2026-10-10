@@ -10,3 +10,12 @@ export function formatBytes(bytes: number) {
   }
   return `${unit === 0 ? value : value.toFixed(1)} ${UNITS[unit]}`
 }
+
+/** `Oct 10, 2026`, in the reader's locale. */
+export function formatDate(ms: number) {
+  return new Date(ms).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}

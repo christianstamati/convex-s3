@@ -3,8 +3,8 @@
 Bun + Turborepo monorepo. See README.md for commands, and `packages/convex-s3/README.md` for the component's API.
 
 - `packages/convex-s3`: the component, published later as `convex-s3` (exports TypeScript sources for now). `src/component` is the Convex component (`convex.config.ts` declares its env vars; `uploads.ts` the upload flow, `lib.ts` metadata, URLs and deletes, `objects.ts` actions), `src/shared` plain TypeScript with no Convex imports (`sigv4.ts` signing on Web Crypto, `s3.ts` one function per S3 operation, `config.ts`, `keys.ts`, `xml.ts`, `md5.ts`), `src/client` the app-side `S3` class and `clientApi()`, `src/react` `useUploadFile`, `src/testing` `FakeS3` and `register`.
-- `packages/backend`: the example Convex app using the component (`convex/files.ts`), and `convex/e2e.ts`, end-to-end checks against the real bucket (`bunx convex run e2e:run`). Imported by the web app as `@workspace/backend/api`.
-- `apps/web`: the example's web app, TanStack Start (React 19), file routes in `src/routes`
+- `packages/backend`: the examples' Convex functions, each a module using the shared `S3` instance (`convex/lib/s3.ts`): `files.ts` (Uploads) and `drive.ts` (Drive: folders are prefixes under `drive/`, path rules in `convex/lib/drivePaths.ts`, pure and tested). `convex/e2e.ts` runs end-to-end checks against the real bucket (`bunx convex run e2e:run`). Imported by the web app as `@workspace/backend/api`.
+- `apps/web`: the examples' web app, TanStack Start (React 19), file routes in `src/routes`. Each example is a route under `/examples/<slug>` and an entry in `src/lib/examples.ts`, which the home page and `/examples` list; add both for a new one.
 - `packages/ui`: shadcn/ui components (Base UI primitives, Tailwind CSS 4), imported as `@workspace/ui/components/<name>`
 
 Before finishing a change, run `bun run check:fix`, `bun run typecheck` and `bun run test`, and fix every error.
@@ -37,7 +37,7 @@ Before finishing a change, run `bun run check:fix`, `bun run typecheck` and `bun
 
 ### Components
 
-- One component per file in `apps/web/src/components/<feature>/`, and the file is named after the component in PascalCase: `FileList.tsx` exports `FileList`. Biome enforces the file names. Feature folders are lowercase (`files`, `home`, `layout`).
+- One component per file in `apps/web/src/components/<feature>/`, and the file is named after the component in PascalCase: `FileList.tsx` exports `FileList`. Biome enforces the file names. Feature folders are lowercase (`drive`, `files`, `uploads`, `examples`, `layout`).
 - Name components after what they render: `FileList` renders files, `UploadCard` uploads them, `InvoiceTable` renders a table.
 - Components fetch their own data and own their mutations, so a page doesn't pass query results or callbacks down.
 - Route files in `src/routes` keep route config (search params, `head`, `ssr`) and a page component that only lays out feature components.

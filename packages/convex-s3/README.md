@@ -150,6 +150,7 @@ the component.
 | `getPublicUrl(ctx, key)` | any | The URL under `S3_PUBLIC_URL`, or null |
 | `getMetadata(ctx, key)` | any | The recorded object with a download URL, or null |
 | `listMetadata(ctx, limit, cursor, prefix)`, `pageMetadata(ctx, paginationOpts, prefix)` | any | Recorded objects by key, under a prefix |
+| `listFolder(ctx, prefix, { delimiter, limit })` | any | One level under a prefix: its objects and its folders (common prefixes), like S3's listing with a delimiter, but live. Skips past each folder with one index read. A key equal to the prefix (a folder marker such as `photos/`) isn't listed |
 | `deleteObject(ctx, key)`, `deleteObjects(ctx, keys)` | mutation | The rows at once, the objects in the background with retries |
 | `deletePrefix(ctx, prefix)` | mutation | Everything under a non-empty prefix, in scheduled steps |
 | `headObject(ctx, key)`, `getObject(ctx, key, { range })` | action | What S3 has now; bytes of a small object or a range |

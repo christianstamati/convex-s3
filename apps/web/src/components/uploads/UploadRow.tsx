@@ -2,16 +2,7 @@ import { IconX } from "@tabler/icons-react"
 import { Button } from "@workspace/ui/components/button"
 import { Progress } from "@workspace/ui/components/progress"
 import { formatBytes } from "@/lib/format"
-
-export type Upload = {
-  id: string
-  name: string
-  size: number
-  fraction: number
-  status: "uploading" | "done" | "failed" | "cancelled"
-  error?: string
-  controller: AbortController
-}
+import type { Upload } from "@/lib/useUploadQueue"
 
 const STATUS: Record<Upload["status"], string> = {
   uploading: "Uploading",

@@ -4,7 +4,7 @@
 import { v } from "convex/values"
 import { components } from "./_generated/api"
 import { type ActionCtx, internalAction } from "./_generated/server"
-import { s3 } from "./files"
+import { s3 } from "./lib/s3"
 
 const MiB = 1024 * 1024
 const encoder = new TextEncoder()

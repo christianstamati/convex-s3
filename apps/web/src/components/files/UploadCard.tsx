@@ -8,11 +8,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@workspace/ui/components/card"
-import { toast } from "@workspace/ui/components/sonner"
-import { useUploadFile } from "convex-s3/react"
-import { type ChangeEvent, useRef, useState } from "react"
-import { type Upload, UploadRow } from "@/components/files/UploadRow"
-import { errorMessage } from "@/lib/errors"
+import { type ChangeEvent, useRef } from "react"
+import { UploadRow } from "@/components/uploads/UploadRow"
+import { useUploadQueue } from "@/lib/useUploadQueue"
 
 const MiB = 1024 * 1024
 
@@ -30,48 +28,8 @@ function testFile(size: number) {
  * to cancel. Files over 8 MB go up in parts.
  */
 export function UploadCard() {
-  const uploadFile = useUploadFile(api.files)
+  const { uploads, start } = useUploadQueue(api.files)
   const input = useRef<HTMLInputElement>(null)
-  const [uploads, setUploads] = useState<Upload[]>([])
-
-  const update = (id: string, patch: Partial<Upload>) =>
-    setUploads((all) => all.map((u) => (u.id === id ? { ...u, ...patch } : u)))
-
-  function start(file: File) {
-    const id = crypto.randomUUID()
-    const controller = new AbortController()
-    setUploads((all) => [
-      {
-        id,
-        name: file.name,
-        size: file.size,
-        fraction: 0,
-        status: "uploading",
-        controller,
-      },
-      ...all,
-    ])
-    uploadFile(file, {
-      signal: controller.signal,
-      onProgress: ({ fraction }) => update(id, { fraction }),
-    })
-      .then(() => {
-        update(id, { status: "done", fraction: 1 })
-        toast.success(`${file.name} uploaded`)
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) {
-          update(id, { status: "cancelled" })
-          return
-        }
-        const message =
-          error instanceof Error && !("data" in error)
-            ? error.message
-            : errorMessage(error, "The upload failed")
-        update(id, { status: "failed", error: message })
-        toast.error(message)
-      })
-  }
 
   function handleFiles(event: ChangeEvent<HTMLInputElement>) {
     for (const file of Array.from(event.target.files ?? [])) start(file)
